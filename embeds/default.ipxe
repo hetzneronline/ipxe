@@ -1,0 +1,5 @@
+#!ipxe
+prompt --key 0x02 --timeout 2000 Press Ctrl-B for the iPXE command line... && shell ||
+dhcp
+ntp 213.239.239.164 || echo NTP sync from ntp1.hetzner.net failed
+chain ${filename} || exit 1

@@ -1,0 +1,315 @@
+From 14830ce57e952ad6152bd89367eba8977b35c485 Mon Sep 17 00:00:00 2001
+From: Tom Siewert <tom.siewert@hetzner.com>
+Date: Tue, 31 Jan 2023 10:21:55 +0100
+Subject: [PATCH] [dhcp] Reduce EB option size
+
+Some MikroTik switches that are used by customers can't handle the
+additional options by iPXE and thus either truncate the request or
+the switch crashes.
+
+Signed-off-by: Tom Siewert <tom.siewert@hetzner.com>
+---
+ src/core/sanboot.c      |   2 -
+ src/core/settings.c     |   3 --
+ src/crypto/certstore.c  |   1 -
+ src/crypto/privkey.c    |   1 -
+ src/crypto/rootcert.c   |   1 -
+ src/include/ipxe/dhcp.h | 108 ----------------------------------------
+ src/net/tcp/iscsi.c     |   2 -
+ src/net/tcp/oncrpc.c    |   2 -
+ src/net/tcp/syslogs.c   |   1 -
+ src/usr/autoboot.c      |   3 --
+ 10 files changed, 124 deletions(-)
+
+diff --git a/src/core/sanboot.c b/src/core/sanboot.c
+index cabc4843..1d069864 100644
+--- a/src/core/sanboot.c
++++ b/src/core/sanboot.c
+@@ -944,7 +944,6 @@ const struct setting san_drive_setting __setting ( SETTING_SANBOOT_EXTRA,
+ 						   san-drive ) = {
+ 	.name = "san-drive",
+ 	.description = "SAN drive number",
+-	.tag = DHCP_EB_SAN_DRIVE,
+ 	.type = &setting_type_uint8,
+ };
+ 
+@@ -969,7 +968,6 @@ const struct setting san_retries_setting __setting ( SETTING_SANBOOT_EXTRA,
+ 						     san-retries ) = {
+ 	.name = "san-retries",
+ 	.description = "SAN retry count",
+-	.tag = DHCP_EB_SAN_RETRY,
+ 	.type = &setting_type_int8,
+ };
+ 
+diff --git a/src/core/settings.c b/src/core/settings.c
+index da075baa..2d65a977 100644
+--- a/src/core/settings.c
++++ b/src/core/settings.c
+@@ -2415,7 +2415,6 @@ const struct setting san_filename_setting __setting ( SETTING_SANBOOT,
+ 						      san-filename ) = {
+ 	.name = "san-filename",
+ 	.description = "SAN filename",
+-	.tag = DHCP_EB_SAN_FILENAME,
+ 	.type = &setting_type_string,
+ };
+ 
+@@ -2423,7 +2422,6 @@ const struct setting san_filename_setting __setting ( SETTING_SANBOOT,
+ const struct setting username_setting __setting ( SETTING_AUTH, username ) = {
+ 	.name = "username",
+ 	.description = "User name",
+-	.tag = DHCP_EB_USERNAME,
+ 	.type = &setting_type_string,
+ };
+ 
+@@ -2431,7 +2429,6 @@ const struct setting username_setting __setting ( SETTING_AUTH, username ) = {
+ const struct setting password_setting __setting ( SETTING_AUTH, password ) = {
+ 	.name = "password",
+ 	.description = "Password",
+-	.tag = DHCP_EB_PASSWORD,
+ 	.type = &setting_type_string,
+ };
+ 
+diff --git a/src/crypto/certstore.c b/src/crypto/certstore.c
+index 2676c7e1..3410e4b9 100644
+--- a/src/crypto/certstore.c
++++ b/src/crypto/certstore.c
+@@ -255,7 +255,6 @@ struct init_fn certstore_init_fn __init_fn ( INIT_LATE ) = {
+ static struct setting cert_setting __setting ( SETTING_CRYPTO, cert ) = {
+ 	.name = "cert",
+ 	.description = "Certificate",
+-	.tag = DHCP_EB_CERT,
+ 	.type = &setting_type_hex,
+ };
+ 
+diff --git a/src/crypto/privkey.c b/src/crypto/privkey.c
+index c15edf13..8b50e463 100644
+--- a/src/crypto/privkey.c
++++ b/src/crypto/privkey.c
+@@ -82,7 +82,6 @@ static struct asn1_cursor default_private_key = {
+ static struct setting privkey_setting __setting ( SETTING_CRYPTO, privkey ) = {
+ 	.name = "privkey",
+ 	.description = "Private key",
+-	.tag = DHCP_EB_KEY,
+ 	.type = &setting_type_hex,
+ };
+ 
+diff --git a/src/crypto/rootcert.c b/src/crypto/rootcert.c
+index 0835ff07..f4b5b2a2 100644
+--- a/src/crypto/rootcert.c
++++ b/src/crypto/rootcert.c
+@@ -65,7 +65,6 @@ static const uint8_t fingerprints[] = { TRUSTED };
+ static struct setting trust_setting __setting ( SETTING_CRYPTO, trust ) = {
+ 	.name = "trust",
+ 	.description = "Trusted root certificate fingerprints",
+-	.tag = DHCP_EB_TRUST,
+ 	.type = &setting_type_hex,
+ };
+ 
+diff --git a/src/include/ipxe/dhcp.h b/src/include/ipxe/dhcp.h
+index b7a5f004..a0f4388b 100644
+--- a/src/include/ipxe/dhcp.h
++++ b/src/include/ipxe/dhcp.h
+@@ -356,47 +356,6 @@ struct dhcp_client_uuid {
+  */
+ #define DHCP_EB_SIADDR DHCP_ENCAP_OPT ( DHCP_EB_ENCAP, 0x03 )
+ 
+-/** Keep SAN drive registered
+- *
+- * If set to a non-zero value, iPXE will not detach any SAN drive
+- * after failing to boot from it.  (This option is required in order
+- * to perform an installation direct to an iSCSI target.)
+- */
+-#define DHCP_EB_KEEP_SAN DHCP_ENCAP_OPT ( DHCP_EB_ENCAP, 0x08 )
+-
+-/** Skip booting from SAN drive
+- *
+- * If set to a non-zero value, iPXE will skip booting from any SAN
+- * drive.  (This option is sometimes required in conjunction with @c
+- * DHCP_EB_KEEP_SAN in order to perform an installation direct to an
+- * iSCSI target.)
+- */
+-#define DHCP_EB_SKIP_SAN_BOOT DHCP_ENCAP_OPT ( DHCP_EB_ENCAP, 0x09 )
+-
+-/*
+- * Tags in the range 0x10-0x4f are reserved for feature markers
+- *
+- */
+-
+-/** Scriptlet
+- *
+- * If a scriptlet exists, it will be executed in place of the usual
+- * call to autoboot()
+- */
+-#define DHCP_EB_SCRIPTLET DHCP_ENCAP_OPT ( DHCP_EB_ENCAP, 0x51 )
+-
+-/** Encrypted syslog server */
+-#define DHCP_EB_SYSLOGS_SERVER DHCP_ENCAP_OPT ( DHCP_EB_ENCAP, 0x55 )
+-
+-/** Trusted root certficate fingerprints */
+-#define DHCP_EB_TRUST DHCP_ENCAP_OPT ( DHCP_EB_ENCAP, 0x5a )
+-
+-/** Client certficate */
+-#define DHCP_EB_CERT DHCP_ENCAP_OPT ( DHCP_EB_ENCAP, 0x5b )
+-
+-/** Client private key */
+-#define DHCP_EB_KEY DHCP_ENCAP_OPT ( DHCP_EB_ENCAP, 0x5c )
+-
+ /** Cross-signed certificate source */
+ #define DHCP_EB_CROSS_CERT DHCP_ENCAP_OPT ( DHCP_EB_ENCAP, 0x5d )
+ 
+@@ -433,73 +392,6 @@ struct dhcp_netdev_desc {
+ /** Use cached network settings (obsolete; do not reuse this value) */
+ #define DHCP_EB_USE_CACHED DHCP_ENCAP_OPT ( DHCP_EB_ENCAP, 0xb2 )
+ 
+-/** SAN retry count
+- *
+- * This is the maximum number of times that SAN operations will be
+- * retried.
+- */
+-#define DHCP_EB_SAN_RETRY DHCP_ENCAP_OPT ( DHCP_EB_ENCAP, 0xbb )
+-
+-/** SAN filename
+- *
+- * This is the path of the bootloader within the SAN device.
+- */
+-#define DHCP_EB_SAN_FILENAME DHCP_ENCAP_OPT ( DHCP_EB_ENCAP, 0xbc )
+-
+-/** SAN drive number
+- *
+- * This is the drive number for a SAN-hooked drive.  For BIOS, 0x80 is
+- * the first hard disk, 0x81 is the second hard disk, etc.
+- */
+-#define DHCP_EB_SAN_DRIVE DHCP_ENCAP_OPT ( DHCP_EB_ENCAP, 0xbd )
+-
+-/** Username
+- *
+- * This will be used as the username for any required authentication.
+- * It is expected that this option's value will be held in
+- * non-volatile storage, rather than transmitted as part of a DHCP
+- * packet.
+- */
+-#define DHCP_EB_USERNAME DHCP_ENCAP_OPT ( DHCP_EB_ENCAP, 0xbe )
+-
+-/** Password
+- *
+- * This will be used as the password for any required authentication.
+- * It is expected that this option's value will be held in
+- * non-volatile storage, rather than transmitted as part of a DHCP
+- * packet.
+- */
+-#define DHCP_EB_PASSWORD DHCP_ENCAP_OPT ( DHCP_EB_ENCAP, 0xbf )
+-
+-/** Reverse username
+- *
+- * This will be used as the reverse username (i.e. the username
+- * provided by the server) for any required authentication.  It is
+- * expected that this option's value will be held in non-volatile
+- * storage, rather than transmitted as part of a DHCP packet.
+- */
+-#define DHCP_EB_REVERSE_USERNAME DHCP_ENCAP_OPT ( DHCP_EB_ENCAP, 0xc0 )
+-
+-/** Reverse password
+- *
+- * This will be used as the reverse password (i.e. the password
+- * provided by the server) for any required authentication.  It is
+- * expected that this option's value will be held in non-volatile
+- * storage, rather than transmitted as part of a DHCP packet.
+- */
+-#define DHCP_EB_REVERSE_PASSWORD DHCP_ENCAP_OPT ( DHCP_EB_ENCAP, 0xc1 )
+-
+-/** User ID
+- *
+- * This will be used as the user id for AUTH_SYS based authentication in NFS.
+- */
+-#define DHCP_EB_UID DHCP_ENCAP_OPT ( DHCP_EB_ENCAP, 0xc2 )
+-
+-/** Group ID
+- *
+- * This will be used as the group id for AUTH_SYS based authentication in NFS.
+- */
+-#define DHCP_EB_GID DHCP_ENCAP_OPT ( DHCP_EB_ENCAP, 0xc3 )
+ 
+ /** iPXE version number */
+ #define DHCP_EB_VERSION DHCP_ENCAP_OPT ( DHCP_EB_ENCAP, 0xeb )
+diff --git a/src/net/tcp/iscsi.c b/src/net/tcp/iscsi.c
+index e36d5619..6f580f58 100644
+--- a/src/net/tcp/iscsi.c
++++ b/src/net/tcp/iscsi.c
+@@ -1928,7 +1928,6 @@ const struct setting reverse_username_setting __setting ( SETTING_AUTH_EXTRA,
+ 							  reverse-username ) = {
+ 	.name = "reverse-username",
+ 	.description = "Reverse user name",
+-	.tag = DHCP_EB_REVERSE_USERNAME,
+ 	.type = &setting_type_string,
+ };
+ 
+@@ -1937,7 +1936,6 @@ const struct setting reverse_password_setting __setting ( SETTING_AUTH_EXTRA,
+ 							  reverse-password ) = {
+ 	.name = "reverse-password",
+ 	.description = "Reverse password",
+-	.tag = DHCP_EB_REVERSE_PASSWORD,
+ 	.type = &setting_type_string,
+ };
+ 
+diff --git a/src/net/tcp/oncrpc.c b/src/net/tcp/oncrpc.c
+index cb66aeb8..95e8327a 100644
+--- a/src/net/tcp/oncrpc.c
++++ b/src/net/tcp/oncrpc.c
+@@ -61,14 +61,12 @@ struct oncrpc_cred oncrpc_auth_none = {
+ const struct setting uid_setting __setting ( SETTING_AUTH, uid ) = {
+ 	.name        = "uid",
+ 	.description = "User ID",
+-	.tag         = DHCP_EB_UID,
+ 	.type        = &setting_type_uint32
+ };
+ 
+ const struct setting gid_setting __setting ( SETTING_AUTH, gid ) = {
+ 	.name        = "gid",
+ 	.description = "Group ID",
+-	.tag         = DHCP_EB_GID,
+ 	.type        = &setting_type_uint32
+ };
+ 
+diff --git a/src/net/tcp/syslogs.c b/src/net/tcp/syslogs.c
+index f1f70d59..debddf86 100644
+--- a/src/net/tcp/syslogs.c
++++ b/src/net/tcp/syslogs.c
+@@ -197,7 +197,6 @@ struct console_driver syslogs_console __console_driver = {
+ const struct setting syslogs_setting __setting ( SETTING_MISC, syslogs ) = {
+ 	.name = "syslogs",
+ 	.description = "Encrypted syslog server",
+-	.tag = DHCP_EB_SYSLOGS_SERVER,
+ 	.type = &setting_type_string,
+ };
+ 
+diff --git a/src/usr/autoboot.c b/src/usr/autoboot.c
+index 24043ae6..826c389f 100644
+--- a/src/usr/autoboot.c
++++ b/src/usr/autoboot.c
+@@ -76,7 +76,6 @@ static int ( * is_autoboot_device ) ( struct net_device *netdev );
+ const struct setting scriptlet_setting __setting ( SETTING_MISC, scriptlet ) = {
+ 	.name = "scriptlet",
+ 	.description = "Boot scriptlet",
+-	.tag = DHCP_EB_SCRIPTLET,
+ 	.type = &setting_type_string,
+ };
+ 
+@@ -92,7 +91,6 @@ const struct setting keep_san_setting __setting ( SETTING_SANBOOT_EXTRA,
+ 						  keep-san ) = {
+ 	.name = "keep-san",
+ 	.description = "Preserve SAN connection",
+-	.tag = DHCP_EB_KEEP_SAN,
+ 	.type = &setting_type_int8,
+ };
+ 
+@@ -101,7 +99,6 @@ const struct setting skip_san_boot_setting __setting ( SETTING_SANBOOT_EXTRA,
+ 						       skip-san-boot ) = {
+ 	.name = "skip-san-boot",
+ 	.description = "Do not boot from SAN device",
+-	.tag = DHCP_EB_SKIP_SAN_BOOT,
+ 	.type = &setting_type_int8,
+ };
+ 
+-- 
+2.38.1
+

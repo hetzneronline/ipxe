@@ -1,0 +1,26 @@
+---
+image: $CI_REGISTRY/cloud/platform/docker/ci/gcc:12.2.0
+
+stages: [build]
+
+build:
+  stage: build
+  tags:
+    - docker.$ARCHITECTURE
+  parallel:
+    matrix:
+      - ARCHITECTURE: ['amd64', 'arm64']
+  before_script:
+    - |
+      if [ "$ARCHITECTURE" == "amd64" ]; then
+        dpkg --add-architecture i386
+        apt update
+        apt install -y syslinux libc6-dev-i386 libc6-dbg:i386
+        apt clean
+        apt autoclean
+      fi
+  script:
+    - task ci
+  artifacts:
+    paths:
+      - ci-build/

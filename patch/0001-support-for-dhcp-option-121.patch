@@ -1,0 +1,282 @@
+From c4a36b256354e00f38d3ae3dbe99e2ea7b00999a Mon Sep 17 00:00:00 2001
+From: Tom Siewert <tom.siewert@hetzner.com>
+Date: Thu, 12 Jan 2023 15:30:47 +0100
+Subject: [PATCH] [dhcp/ipv4] Support for DHCP option 121: Classless static
+ route option
+
+The implementation is based upon Raphael's initial approach [1], but fixes
+some issues that caused memory corruption on Legacy systems.
+
+[1] https://github.com/ipxe/ipxe/pull/104
+
+Signed-off-by: Raphael Pour <raphael.pour@hetzner.com>
+Signed-off-by: Tom Siewert <tom.siewert@hetzner.com>
+---
+ src/include/ipxe/dhcp.h      |  6 +++
+ src/include/ipxe/dhcpopts.h  |  5 +-
+ src/include/ipxe/ip.h        |  7 +++
+ src/include/ipxe/netdevice.h |  6 +++
+ src/net/dhcpopts.c           |  6 +--
+ src/net/ipv4.c               | 91 ++++++++++++++++++++++++++++++------
+ src/net/udp/dhcp.c           | 22 +++++++++
+ 7 files changed, 126 insertions(+), 17 deletions(-)
+
+diff --git a/src/include/ipxe/dhcp.h b/src/include/ipxe/dhcp.h
+index b7a5f004..8fb3947c 100644
+--- a/src/include/ipxe/dhcp.h
++++ b/src/include/ipxe/dhcp.h
+@@ -323,6 +323,12 @@ struct dhcp_client_uuid {
+ /** DNS domain search list */
+ #define DHCP_DOMAIN_SEARCH 119
+ 
++/** DHCP 121 - Classless Static Route Option  */
++#define DHCP_CLASSLESS_STATIC_ROUTE 121
++
++/** DHCP 121 - Classless Static Route Option for Microsoft DHCP-server  */
++#define DHCP_CLASSLESS_STATIC_ROUTE_MS 249
++
+ /** Etherboot-specific encapsulated options
+  *
+  * This encapsulated options field is used to contain all options
+diff --git a/src/include/ipxe/dhcpopts.h b/src/include/ipxe/dhcpopts.h
+index 707fda4a..604d479c 100644
+--- a/src/include/ipxe/dhcpopts.h
++++ b/src/include/ipxe/dhcpopts.h
+@@ -39,5 +39,8 @@ extern void dhcpopt_init ( struct dhcp_options *options,
+ 					       size_t len ) );
+ extern void dhcpopt_update_used_len ( struct dhcp_options *options );
+ extern int dhcpopt_no_realloc ( struct dhcp_options *options, size_t len );
+-
++extern int find_dhcp_option_with_encap ( struct dhcp_options *options,
++                        unsigned int tag, int *encap_offset );
++extern struct dhcp_option * dhcp_option ( struct dhcp_options *options,
++                        unsigned int offset );
+ #endif /* _IPXE_DHCPOPTS_H */
+diff --git a/src/include/ipxe/ip.h b/src/include/ipxe/ip.h
+index 285be6dc..ba869068 100644
+--- a/src/include/ipxe/ip.h
++++ b/src/include/ipxe/ip.h
+@@ -70,6 +70,13 @@ struct ipv4_miniroute {
+ 	struct in_addr gateway;
+ };
+ 
++/** An IPv4 address octets/int union */
++union ipv4_conversion {
++
++	uint32_t address;
++	uint8_t octets[4];
++};
++
+ extern struct list_head ipv4_miniroutes;
+ 
+ extern struct net_protocol ipv4_protocol __net_protocol;
+diff --git a/src/include/ipxe/netdevice.h b/src/include/ipxe/netdevice.h
+index 294f7b36..3ed27264 100644
+--- a/src/include/ipxe/netdevice.h
++++ b/src/include/ipxe/netdevice.h
+@@ -430,6 +430,12 @@ struct net_device {
+ 	/** Driver private data */
+ 	void *priv;
+ 
++	/** Static routes from DHCP option 121 */
++	uint8_t * static_routes;
++
++	/** DHCP option 121 length */
++	uint8_t static_routes_len;
++
+ 	/** Network device configurations (variable length) */
+ 	struct net_device_configuration configs[0];
+ };
+diff --git a/src/net/dhcpopts.c b/src/net/dhcpopts.c
+index cdb632b4..6aa2efca 100644
+--- a/src/net/dhcpopts.c
++++ b/src/net/dhcpopts.c
+@@ -64,8 +64,8 @@ static inline char * dhcp_tag_name ( unsigned int tag ) {
+  * @v offset		Offset within options block
+  * @ret option		DHCP option
+  */
+-static inline __attribute__ (( always_inline )) struct dhcp_option *
+-dhcp_option ( struct dhcp_options *options, unsigned int offset ) {
++struct dhcp_option * dhcp_option ( struct dhcp_options *options,
++                      unsigned int offset ) {
+ 	return ( ( struct dhcp_option * ) ( options->data + offset ) );
+ }
+ 
+@@ -116,7 +116,7 @@ static unsigned int dhcp_option_len ( struct dhcp_option *option ) {
+  * such as options missing a @c DHCP_END terminator, or options whose
+  * length would take them beyond the end of the data block.
+  */
+-static int find_dhcp_option_with_encap ( struct dhcp_options *options,
++int find_dhcp_option_with_encap ( struct dhcp_options *options,
+ 					 unsigned int tag,
+ 					 int *encap_offset ) {
+ 	unsigned int original_tag __attribute__ (( unused )) = tag;
+diff --git a/src/net/ipv4.c b/src/net/ipv4.c
+index b9ce5e7f..ddd9d050 100644
+--- a/src/net/ipv4.c
++++ b/src/net/ipv4.c
+@@ -337,9 +337,12 @@ static int ipv4_tx ( struct io_buffer *iobuf,
+ 	if ( ( next_hop.s_addr != INADDR_BROADCAST ) &&
+ 	     ( ( miniroute = ipv4_route ( sin_dest->sin_scope_id,
+ 					  &next_hop ) ) != NULL ) ) {
+-		iphdr->src = miniroute->address;
+ 		netmask = miniroute->netmask;
+ 		netdev = miniroute->netdev;
++
++        struct settings *settings = netdev_settings ( netdev );
++        fetch_ipv4_setting ( settings, &ip_setting, &iphdr->src );
++        next_hop = miniroute->gateway;
+ 	}
+ 	if ( ! netdev ) {
+ 		DBGC ( sin_dest->sin_addr, "IPv4 has no route to %s\n",
+@@ -448,16 +451,15 @@ int ipv4_has_any_addr ( struct net_device *netdev ) {
+  * @ret has_addr	Network device has this IPv4 address
+  */
+ static int ipv4_has_addr ( struct net_device *netdev, struct in_addr addr ) {
+-	struct ipv4_miniroute *miniroute;
+ 
+-	list_for_each_entry ( miniroute, &ipv4_miniroutes, list ) {
+-		if ( ( miniroute->netdev == netdev ) &&
+-		     ( miniroute->address.s_addr == addr.s_addr ) ) {
+-			/* Found matching address */
+-			return 1;
+-		}
+-	}
+-	return 0;
++    struct in_addr address;
++    struct settings *settings = netdev_settings ( netdev );
++    fetch_ipv4_setting ( settings, &ip_setting, &address );
++
++    if ( address.s_addr == addr.s_addr )
++         return 1;
++
++    return 0;
+ }
+ 
+ /**
+@@ -844,6 +846,26 @@ static int ipv4_gratuitous_arp ( struct net_device *netdev,
+ 	return 0;
+ }
+ 
++/**
++ * Convert netmask from prefix length to IPv4
++ *
++ * @v prefix_len   Prefix length
++ * @ret rc	  Return IPv4 netmask
++ */
++static inline uint32_t prefix_len_to_mask ( uint8_t prefix_len ) {
++
++	/* Check if prefix_len is in the right range. While the prefix_len is unsigned,
++	   we don't have to check for negative numbers */
++	if(prefix_len > 32)
++	{
++		DBGC( prefix_len, "Invalid prefix_len /%u. Must fullfill 0<=prefix_len<=32\n",
++			  prefix_len );
++		return 0;
++	}
++
++	return htonl ( ( prefix_len > 0 ) ? 0xFFFFFFFF << ( 32 - prefix_len ) : 0 );
++}
++
+ /**
+  * Process IPv4 network device settings
+  *
+@@ -890,9 +912,52 @@ static int ipv4_settings ( int ( * apply ) ( struct net_device *netdev,
+ 		/* Get default gateway, if present */
+ 		fetch_ipv4_setting ( settings, &gateway_setting, &gateway );
+ 
+-		/* Apply settings */
+-		if ( ( rc = apply ( netdev, address, netmask, gateway ) ) != 0 )
+-			return rc;
++		/* Configure route (-s) */
++		uint8_t * raw_data = netdev->static_routes;
++		uint8_t option_len = netdev->static_routes_len;
++
++
++		/* Check if static routes available
++		 * The minimum length for DHCP option 121 is 5 bytes */
++		if ( option_len >= 5 ) {
++			uint8_t i = 0;
++			uint8_t j;
++			uint8_t addr_octets_len;
++			uint8_t prefix_len;
++
++			union ipv4_conversion address_conversion = {0};
++			union ipv4_conversion gateway_conversion = {0};
++
++			/* Extract routes and add them to routing table */
++			while ( i < option_len ) {
++				prefix_len = raw_data[i];
++				i++;
++
++				/* Netmask */
++				addr_octets_len = prefix_len / 8;
++				netmask.s_addr = prefix_len_to_mask ( prefix_len );
++
++				/* Address */
++				for ( j = 0; j < addr_octets_len; j++ )
++					address_conversion.octets[j] = raw_data[i + j];
++
++				address.s_addr = address_conversion.address;
++
++				/* Gateway */
++				i += j;
++				for ( j = 0; j < 4; j++ )
++					gateway_conversion.octets[j] = raw_data[i + j];
++
++				gateway.s_addr = gateway_conversion.address;
++				i += j;
++
++				if ( ( rc = apply ( netdev, address, netmask, gateway ) ) != 0 )
++					return rc;
++			}
++		} else {
++			if ( ( rc = apply ( netdev, address, netmask, gateway ) ) != 0 )
++				return rc;
++		}
+ 	}
+ 
+ 	return 0;
+diff --git a/src/net/udp/dhcp.c b/src/net/udp/dhcp.c
+index a335a778..eb18184f 100644
+--- a/src/net/udp/dhcp.c
++++ b/src/net/udp/dhcp.c
+@@ -94,6 +94,7 @@ static uint8_t dhcp_request_options_data[] = {
+ 		      DHCP_ROOT_PATH, DHCP_MTU, DHCP_VENDOR_ENCAP,
+ 		      DHCP_VENDOR_CLASS_ID, DHCP_TFTP_SERVER_NAME,
+ 		      DHCP_BOOTFILE_NAME, DHCP_DOMAIN_SEARCH,
++		      DHCP_CLASSLESS_STATIC_ROUTE, DHCP_CLASSLESS_STATIC_ROUTE_MS,
+ 		      128, 129, 130, 131, 132, 133, 134, 135, /* for PXE */
+ 		      DHCP_EB_ENCAP, DHCP_ISCSI_INITIATOR_IQN ),
+ 	DHCP_END
+@@ -588,6 +589,27 @@ static void dhcp_request_rx ( struct dhcp_session *dhcp,
+ 	/* Record assigned address */
+ 	dhcp->local.sin_addr = ip;
+ 
++
++    /* Looking for DHCP option 121 */
++    int offset_opt121 = 0;
++    if ( ( offset_opt121 = find_dhcp_option_with_encap( &dhcppkt->options,
++            DHCP_CLASSLESS_STATIC_ROUTE, NULL ) ) < 0 ) {
++        /* Option 121 not found. Looking for Microsoft's option 249 */
++        if ( ( offset_opt121 =
++                find_dhcp_option_with_encap( &dhcppkt->options,
++                        DHCP_CLASSLESS_STATIC_ROUTE_MS, NULL ) ) < 0 ) {
++            /* Neither option 121 found nor 249 */
++            dhcp->netdev->static_routes_len = 0;
++        }
++    }
++    if ( offset_opt121 > 0 ) {
++        struct dhcp_option *d_option =
++                dhcp_option ( &dhcppkt->options, offset_opt121 );
++        DBGC ( dhcp, "DHCP option 121 length: %d\n", d_option->len );
++        dhcp->netdev->static_routes_len = d_option->len;
++        dhcp->netdev->static_routes = ( ( uint8_t * ) d_option->data );
++    }
++
+ 	/* Register settings */
+ 	parent = netdev_settings ( dhcp->netdev );
+ 	settings = &dhcppkt->settings;
+-- 
+2.38.1
+

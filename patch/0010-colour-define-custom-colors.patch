@@ -1,0 +1,48 @@
+From 8abccd6cad99834ab6ec1353ce95c93f99601035 Mon Sep 17 00:00:00 2001
+From: Tan Siewert <tan.siewert@hetzner.com>
+Date: Wed, 8 Jan 2025 11:44:50 +0100
+Subject: [PATCH] colour: define custom colors
+
+Signed-off-by: Tan Siewert <tan.siewert@hetzner.com>
+---
+ src/config/local/colour.h | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+ create mode 100644 src/config/local/colour.h
+
+diff --git a/src/config/local/colour.h b/src/config/local/colour.h
+new file mode 100644
+index 00000000..4ad51617
+--- /dev/null
++++ b/src/config/local/colour.h
+@@ -0,0 +1,28 @@
++#undef COLOR_NORMAL_FG
++#undef COLOR_NORMAL_BG
++#undef COLOR_SELECT_FG
++#undef COLOR_SELECT_BG
++#undef COLOR_SEPARATOR_FG
++#undef COLOR_SEPARATOR_BG
++#undef COLOR_EDIT_FG
++#undef COLOR_EDIT_BG
++#undef COLOR_ALERT_FG
++#undef COLOR_ALERT_BG
++#undef COLOR_URL_FG
++#undef COLOR_URL_BG
++#undef COLOR_PXE_FG
++#undef COLOR_PXE_BG
++#define COLOR_NORMAL_FG		COLOR_RED
++#define COLOR_NORMAL_BG		COLOR_BLACK
++#define COLOR_SELECT_FG		COLOR_WHITE
++#define COLOR_SELECT_BG		COLOR_BLUE
++#define COLOR_SEPARATOR_FG	COLOR_WHITE
++#define COLOR_SEPARATOR_BG	COLOR_BLACK
++#define COLOR_EDIT_FG		COLOR_BLACK
++#define COLOR_EDIT_BG		COLOR_RED
++#define COLOR_ALERT_FG		COLOR_WHITE
++#define COLOR_ALERT_BG		COLOR_RED
++#define COLOR_URL_FG		COLOR_RED
++#define COLOR_URL_BG		COLOR_BLACK
++#define COLOR_PXE_FG		COLOR_BLACK
++#define COLOR_PXE_BG		COLOR_WHITE
+-- 
+2.47.0
+

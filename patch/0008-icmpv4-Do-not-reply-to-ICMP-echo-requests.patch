@@ -1,0 +1,43 @@
+From cc353aedfe3219eea5cffc9d2f4dc64d5ac09b50 Mon Sep 17 00:00:00 2001
+From: Tom Siewert <tom.siewert@hetzner.com>
+Date: Thu, 23 Nov 2023 11:25:00 +0100
+Subject: [PATCH] [icmpv4] Do not reply to ICMP echo requests
+
+Based on our experience and debugging, it can be very confusing when
+iPXE starts to reply to ICMP echo requests. It already caused enough
+tickets because customers and support engineers were confused why the
+server replied only for a few seconds.
+
+Signed-off-by: Tom Siewert <tom.siewert@hetzner.com>
+---
+ src/net/icmpv4.c | 7 +------
+ 1 file changed, 1 insertion(+), 6 deletions(-)
+
+diff --git a/src/net/icmpv4.c b/src/net/icmpv4.c
+index 0858ff37..3f2649c5 100644
+--- a/src/net/icmpv4.c
++++ b/src/net/icmpv4.c
+@@ -50,7 +50,7 @@ struct icmp_echo_protocol icmpv4_echo_protocol __icmp_echo_protocol;
+  */
+ static int icmpv4_rx ( struct io_buffer *iobuf,
+ 		       struct net_device *netdev __unused,
+-		       struct sockaddr_tcpip *st_src,
++		       struct sockaddr_tcpip *st_src __unused,
+ 		       struct sockaddr_tcpip *st_dest __unused,
+ 		       uint16_t pshdr_csum __unused ) {
+ 	struct icmp_header *icmp = iobuf->data;
+@@ -80,11 +80,6 @@ static int icmpv4_rx ( struct io_buffer *iobuf,
+ 	/* Handle ICMP packet */
+ 	type = icmp->type;
+ 	switch ( type ) {
+-	case ICMP_ECHO_REQUEST:
+-		return icmp_rx_echo_request ( iobuf, st_src,
+-					      &icmpv4_echo_protocol );
+-	case ICMP_ECHO_REPLY:
+-		return icmp_rx_echo_reply ( iobuf, st_src );
+ 	default:
+ 		DBG ( "ICMP ignoring type %d\n", type );
+ 		rc = 0;
+-- 
+2.40.1
+

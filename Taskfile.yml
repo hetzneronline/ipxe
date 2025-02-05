@@ -1,0 +1,50 @@
+---
+version: '2'
+output: 'prefixed'
+
+tasks:
+  ci:
+    description: CI Tasks
+    cmds:
+      - task: dev
+      - task: output
+      - task: git:cleanup
+
+  dev:
+    desc: Build dev binary for {{ARCH}}
+    cmds:
+      - git -C ipxe/ stash -u
+      - |
+        for patch in $(cat patch/series); do
+          git apply --directory ipxe patch/${patch}
+        done
+      - task: build:{{ARCH}}
+
+  git:cleanup:
+    desc: Cleanup git and revert stash
+    cmds:
+      - git -C ipxe/ checkout -- .
+      - cmd: git -C ipxe/ stash apply
+        ignore_error: true
+
+  build:amd64:
+    desc: Build amd64 binaries
+    cmds:
+      - |
+        make -j$(nproc) -C ipxe/src TRUST=../../ca.crt EMBED=$(pwd)/embeds/default.ipxe bin-x86_64-efi/snponly.efi
+        make -j$(nproc) -C ipxe/src TRUST=../../ca.crt bin-x86_64-pcbios/undionly.kkpxe
+        mv ipxe/src/bin-x86_64-efi/snponly.efi ipxe/src/bin-x86_64-efi/snponly-amd64.efi
+
+  build:arm64:
+    desc: Build arm64 binaries
+    cmds:
+      - |
+        make -j$(nproc) -C ipxe/src TRUST=../../ca.crt EMBED=$(pwd)/embeds/default.ipxe bin-arm64-efi/snponly.efi
+        mv ipxe/src/bin-arm64-efi/snponly.efi ipxe/src/bin-arm64-efi/snponly-arm64.efi
+
+  output:
+    desc: Move binaries to output
+    cmds:
+      - mkdir -p ci-build
+      - find ipxe/src -type f -name 'snponly*.efi' -exec mv {} ci-build/ \;
+      - find ipxe/src -type f -name 'undionly.kkpxe' -exec mv {} ci-build/ \;

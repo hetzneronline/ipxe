@@ -1,0 +1,11 @@
+0001-Makefile-Get-echo-path-via-env.patch
+0001-support-for-dhcp-option-121.patch
+0002-add-support-for-fragmented-tls-handshake-packets.patch
+0003-config-Enable-framebuffer-and-set-branding.patch
+0004-config-general-Enable-Hetzner-features.patch
+0005-dhcp-Reduce-EB-option-size.patch
+0006-crypto-Use-own-crosscert-server.patch
+0007-rng-add-more-entropy.patch
+0008-icmpv4-Do-not-reply-to-ICMP-echo-requests.patch
+0009-pcbios-add-biosboot-command.patch
+0010-colour-define-custom-colors.patch

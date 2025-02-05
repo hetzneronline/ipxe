@@ -1,0 +1,89 @@
+From 6dd7aa803c94afb5d3fdd5dfad03c9966689d936 Mon Sep 17 00:00:00 2001
+From: Tom Siewert <tom.siewert@hetzner.com>
+Date: Tue, 8 Nov 2022 12:12:17 +0100
+Subject: [PATCH] config/general: Enable Hetzner features
+
+Signed-off-by: Tom Siewert <tom.siewert@hetzner.com>
+---
+ src/config/general.h | 24 ++++++++++++------------
+ 1 file changed, 12 insertions(+), 12 deletions(-)
+
+diff --git a/src/config/general.h b/src/config/general.h
+index 2d15f500..7e629af2 100644
+--- a/src/config/general.h
++++ b/src/config/general.h
+@@ -35,7 +35,7 @@ FILE_LICENCE ( GPL2_OR_LATER_OR_UBDL );
+  */
+ 
+ #define	NET_PROTO_IPV4		/* IPv4 protocol */
+-//#define NET_PROTO_IPV6	/* IPv6 protocol */
++#define	NET_PROTO_IPV6		/* IPv6 protocol */
+ #undef	NET_PROTO_FCOE		/* Fibre Channel over Ethernet protocol */
+ #define	NET_PROTO_STP		/* Spanning Tree protocol */
+ #define	NET_PROTO_LACP		/* Link Aggregation control protocol */
+@@ -55,7 +55,7 @@ FILE_LICENCE ( GPL2_OR_LATER_OR_UBDL );
+ 
+ #define	DOWNLOAD_PROTO_TFTP	/* Trivial File Transfer Protocol */
+ #define	DOWNLOAD_PROTO_HTTP	/* Hypertext Transfer Protocol */
+-#undef	DOWNLOAD_PROTO_HTTPS	/* Secure Hypertext Transfer Protocol */
++#define	DOWNLOAD_PROTO_HTTPS	/* Secure Hypertext Transfer Protocol */
+ #undef	DOWNLOAD_PROTO_FTP	/* File Transfer Protocol */
+ #undef	DOWNLOAD_PROTO_SLAM	/* Scalable Local Area Multicast */
+ #undef	DOWNLOAD_PROTO_NFS	/* Network File System Protocol */
+@@ -70,7 +70,7 @@ FILE_LICENCE ( GPL2_OR_LATER_OR_UBDL );
+ //#undef	SANBOOT_PROTO_AOE	/* AoE protocol */
+ //#undef	SANBOOT_PROTO_IB_SRP	/* Infiniband SCSI RDMA protocol */
+ //#undef	SANBOOT_PROTO_FCP	/* Fibre Channel protocol */
+-//#undef	SANBOOT_PROTO_HTTP	/* HTTP SAN protocol */
++#define	SANBOOT_PROTO_HTTP	/* HTTP SAN protocol */
+ 
+ /*
+  * HTTP extensions
+@@ -108,7 +108,7 @@ FILE_LICENCE ( GPL2_OR_LATER_OR_UBDL );
+ //#define	IMAGE_ELF		/* ELF image support */
+ //#define	IMAGE_MULTIBOOT		/* MultiBoot image support */
+ //#define	IMAGE_PXE		/* PXE image support */
+-//#define	IMAGE_SCRIPT		/* iPXE script image support */
++#define	IMAGE_SCRIPT		/* iPXE script image support */
+ //#define	IMAGE_BZIMAGE		/* Linux bzImage image support */
+ //#define	IMAGE_COMBOOT		/* SYSLINUX COMBOOT image support */
+ //#define	IMAGE_EFI		/* EFI image support */
+@@ -139,26 +139,26 @@ FILE_LICENCE ( GPL2_OR_LATER_OR_UBDL );
+ #define LOGIN_CMD		/* Login command */
+ #define SYNC_CMD		/* Sync command */
+ #define SHELL_CMD		/* Shell command */
+-//#define NSLOOKUP_CMD		/* DNS resolving command */
++#define NSLOOKUP_CMD		/* DNS resolving command */
+ //#define TIME_CMD		/* Time commands */
+ //#define DIGEST_CMD		/* Image crypto digest commands */
+ //#define LOTEST_CMD		/* Loopback testing commands */
+-//#define VLAN_CMD		/* VLAN commands */
++#define VLAN_CMD		/* VLAN commands */
+ //#define PXE_CMD		/* PXE commands */
+-//#define REBOOT_CMD		/* Reboot command */
+-//#define POWEROFF_CMD		/* Power off command */
++#define REBOOT_CMD		/* Reboot command */
++#define POWEROFF_CMD		/* Power off command */
+ //#define IMAGE_TRUST_CMD	/* Image trust management commands */
+ //#define PCI_CMD		/* PCI commands */
+ //#define PARAM_CMD		/* Form parameter commands */
+-//#define NEIGHBOUR_CMD		/* Neighbour management commands */
+-//#define PING_CMD		/* Ping command */
+-//#define CONSOLE_CMD		/* Console command */
++#define NEIGHBOUR_CMD		/* Neighbour management commands */
++#define PING_CMD		/* Ping command */
++#define CONSOLE_CMD		/* Console command */
+ //#define IPSTAT_CMD		/* IP statistics commands */
+ //#define PROFSTAT_CMD		/* Profiling commands */
+-//#define NTP_CMD		/* NTP commands */
++#define NTP_CMD		/* NTP commands */
+ //#define CERT_CMD		/* Certificate management commands */
+ //#define IMAGE_MEM_CMD		/* Read memory command */
+-#define IMAGE_ARCHIVE_CMD	/* Archive image management commands */
++//#define IMAGE_ARCHIVE_CMD	/* Archive image management commands */
+ 
+ /*
+  * ROM-specific options
+-- 
+2.36.2
+

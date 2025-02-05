@@ -1,0 +1,14 @@
+name: Auto Close Pull Requests
+
+on:
+  pull_request:
+    types: [opened]
+
+jobs:
+  auto-close:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close Pull Request
+        uses: peter-evans/close-pull@v3
+        with:
+          comment: "🚨 We do not accept pull requests via GitHub. Please contact our support at robot.hetzner.com/support 🚨"

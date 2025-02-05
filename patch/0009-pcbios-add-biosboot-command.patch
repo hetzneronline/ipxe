@@ -1,0 +1,97 @@
+From 754e43ee262b0c9d071c682bd182826917f6efc7 Mon Sep 17 00:00:00 2001
+From: Tan Siewert <tan.siewert@hetzner.com>
+Date: Mon, 6 Jan 2025 15:52:47 +0100
+Subject: [PATCH] pcbios: add biosboot command
+
+biosboot is a very hacky command that instantly calls INT18 because
+the INT13 approach with `sanboot --no-describe 0x80` does not work.
+
+This command is also required if you still need an INT18 call for
+"next boot" if you use the "kkpxe" binary.
+
+Signed-off-by: Tan Siewert <tan.siewert@hetzner.com>
+---
+ src/arch/x86/hci/commands/biosboot_cmd.c | 53 ++++++++++++++++++++++++
+ src/config/config.c                      |  5 +++
+ 2 files changed, 58 insertions(+)
+ create mode 100644 src/arch/x86/hci/commands/biosboot_cmd.c
+
+diff --git a/src/arch/x86/hci/commands/biosboot_cmd.c b/src/arch/x86/hci/commands/biosboot_cmd.c
+new file mode 100644
+index 00000000..ba60ecee
+--- /dev/null
++++ b/src/arch/x86/hci/commands/biosboot_cmd.c
+@@ -0,0 +1,53 @@
++/*
++ * Hacky INT18 BIOS boot command because the 0x80 approach
++ * is not working on some hardware.
++ *
++ * Author: Tan Siewert <tan.siewert@hetzner.com>
++ */
++
++FILE_LICENCE ( GPL2_OR_LATER_OR_UBDL );
++
++#include <registers.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <ipxe/command.h>
++#include <ipxe/parseopt.h>
++
++struct biosboot_options {};
++
++static struct option_descriptor biosboot_opts[] = {};
++
++static struct command_descriptor biosboot_cmd =
++    COMMAND_DESC(struct biosboot_options, biosboot_opts, 0, 0, NULL);
++
++static int biosboot_exec(int argc __unused, char **argv __unused)
++{
++  struct biosboot_options opts;
++  struct i386_regs zero_regs = {0};
++  int rc;
++
++  /* Although we do not have any options, iPXE requires the parsing... */
++  if ((rc = parse_options(argc, argv, &biosboot_cmd, &opts)) != 0)
++    return rc;
++
++  /**
++   * We use INT18 to boot the BIOS because the 0x80 approach
++   * is not working on some hardware.
++   *
++   * This approach is inspired by the localboot command
++   * in SYSLINUX.
++   */
++  printf("Booting next device via INT18\n");
++  __asm__ __volatile__("int $0x18\n"
++                       :
++                       : "a"(zero_regs.eax), "b"(zero_regs.ebx),
++                         "c"(zero_regs.ecx), "d"(zero_regs.edx),
++                         "S"(zero_regs.esi), "D"(zero_regs.edi)
++                       : "memory");
++  return 0;
++}
++
++struct command biosboot_command __command = {
++    .name = "biosboot",
++    .exec = biosboot_exec,
++};
+\ No newline at end of file
+diff --git a/src/config/config.c b/src/config/config.c
+index a8186613..8805b18c 100644
+--- a/src/config/config.c
++++ b/src/config/config.c
+@@ -51,6 +51,11 @@ PROVIDE_REQUIRING_SYMBOL();
+  *
+  */
+ 
++/* Hetzner specific commands */
++#ifdef PLATFORM_pcbios
++REQUIRE_OBJECT ( biosboot_cmd );
++#endif
++
+ #ifdef CONSOLE_SERIAL
+ REQUIRE_OBJECT ( serial );
+ #endif
+-- 
+2.47.0
+

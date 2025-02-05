@@ -1,0 +1,33 @@
+From 730e937939624a110001674030bcb0253b4666af Mon Sep 17 00:00:00 2001
+From: Tom Siewert <tom.siewert@hetzner.com>
+Date: Wed, 25 Jan 2023 17:04:41 +0100
+Subject: [PATCH] crypto: Use own crosscert server
+
+We can't rely on iPXE's server as it is outside of our infrastructure
+and servers with enabled firewall can't boot the rescue system
+otherwise.
+
+Additionally, IPv6-only servers / CGNAT servers can't reach the
+internet.
+
+Signed-off-by: Tom Siewert <tom.siewert@hetzner.com>
+---
+ src/config/crypto.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/config/crypto.h b/src/config/crypto.h
+index 76bf14d4..15dbbbbb 100644
+--- a/src/config/crypto.h
++++ b/src/config/crypto.h
+@@ -62,7 +62,7 @@ FILE_LICENCE ( GPL2_OR_LATER_OR_UBDL );
+  * download cross-signed certificates in order to complete a
+  * certificate chain.
+  */
+-#define CROSSCERT "http://ca.ipxe.org/auto"
++#define CROSSCERT "http://ca.fsn1-dhcp1.hetzner.company/auto"
+ 
+ /** Perform OCSP checks when applicable
+  *
+-- 
+2.38.1
+
