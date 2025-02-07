@@ -9,3 +9,7 @@
 0008-icmpv4-Do-not-reply-to-ICMP-echo-requests.patch
 0009-pcbios-add-biosboot-command.patch
 0010-colour-define-custom-colors.patch
+
+0011-rng-Check-for-several-functioning-RTC-interrupts.patch
+0012-rng-Add-RDRAND-as-an-entropy-source.patch
+0013-rng-Allow-entropy-source-to-be-selected-at-runtime.patch

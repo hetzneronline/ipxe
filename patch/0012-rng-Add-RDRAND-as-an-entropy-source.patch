@@ -1,0 +1,205 @@
+From 30ffcb0a843b06ea2051950fe62490b07e61385c Mon Sep 17 00:00:00 2001
+From: Michael Brown <mcb30@ipxe.org>
+Date: Wed, 15 Feb 2023 22:43:33 +0000
+Subject: [PATCH 2/3] [rng] Add RDRAND as an entropy source
+
+Signed-off-by: Michael Brown <mcb30@ipxe.org>
+(cherry picked from commit cff857461be443339aa39d614635d9a4eae8f8b2)
+---
+ src/arch/x86/core/rdrand.c          | 99 +++++++++++++++++++++++++++++
+ src/arch/x86/include/bits/entropy.h |  1 +
+ src/arch/x86/include/bits/errfile.h |  1 +
+ src/arch/x86/include/ipxe/cpuid.h   |  3 +
+ src/arch/x86/include/ipxe/rdrand.h  | 37 +++++++++++
+ 5 files changed, 141 insertions(+)
+ create mode 100644 src/arch/x86/core/rdrand.c
+ create mode 100644 src/arch/x86/include/ipxe/rdrand.h
+
+diff --git a/src/arch/x86/core/rdrand.c b/src/arch/x86/core/rdrand.c
+new file mode 100644
+index 00000000..29605ab2
+--- /dev/null
++++ b/src/arch/x86/core/rdrand.c
+@@ -0,0 +1,99 @@
++/*
++ * Copyright (C) 2023 Michael Brown <mbrown@fensystems.co.uk>.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of the
++ * License, or any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
++ * 02110-1301, USA.
++ *
++ * You can also choose to distribute this program under the terms of
++ * the Unmodified Binary Distribution Licence (as given in the file
++ * COPYING.UBDL), provided that you have satisfied its requirements.
++ */
++
++FILE_LICENCE ( GPL2_OR_LATER_OR_UBDL );
++
++/** @file
++ *
++ * Hardware random number generator
++ *
++ */
++
++#include <errno.h>
++#include <ipxe/cpuid.h>
++#include <ipxe/entropy.h>
++
++/** Number of times to retry RDRAND instruction */
++#define RDRAND_RETRY_COUNT 16
++
++/** Colour for debug messages */
++#define colour CPUID_FEATURES_INTEL_ECX_RDRAND
++
++/**
++ * Enable entropy gathering
++ *
++ * @ret rc		Return status code
++ */
++static int rdrand_entropy_enable ( void ) {
++	struct x86_features features;
++
++	/* Check that RDRAND is supported */
++	x86_features ( &features );
++	if ( ! ( features.intel.ecx & CPUID_FEATURES_INTEL_ECX_RDRAND ) ) {
++		DBGC ( colour, "RDRAND not supported\n" );
++		return -ENOTSUP;
++	}
++
++	return 0;
++}
++
++/**
++ * Disable entropy gathering
++ *
++ */
++static void rdrand_entropy_disable ( void ) {
++
++	/* Nothing to do */
++}
++
++/**
++ * Get noise sample
++ *
++ * @ret noise		Noise sample
++ * @ret rc		Return status code
++ */
++static int rdrand_get_noise ( noise_sample_t *noise ) {
++	unsigned int result;
++	unsigned int discard_c;
++	unsigned int ok;
++
++	/* Issue RDRAND, retrying until CF is set */
++	__asm__ ( "\n1:\n\t"
++		  "rdrand %0\n\t"
++		  "sbb %1, %1\n\t"
++		  "loopz 1b\n\t"
++		  : "=r" ( result ), "=r" ( ok ), "=c" ( discard_c )
++		  : "2" ( RDRAND_RETRY_COUNT ) );
++	if ( ! ok ) {
++		DBGC ( colour, "RDRAND failed to become ready\n" );
++		return -EBUSY;
++	}
++
++	*noise = result;
++	return 0;
++}
++
++PROVIDE_ENTROPY_INLINE ( rdrand, min_entropy_per_sample );
++PROVIDE_ENTROPY ( rdrand, entropy_enable, rdrand_entropy_enable );
++PROVIDE_ENTROPY ( rdrand, entropy_disable, rdrand_entropy_disable );
++PROVIDE_ENTROPY ( rdrand, get_noise, rdrand_get_noise );
+diff --git a/src/arch/x86/include/bits/entropy.h b/src/arch/x86/include/bits/entropy.h
+index 5ac7fcd2..7accea33 100644
+--- a/src/arch/x86/include/bits/entropy.h
++++ b/src/arch/x86/include/bits/entropy.h
+@@ -10,5 +10,6 @@
+ FILE_LICENCE ( GPL2_OR_LATER_OR_UBDL );
+ 
+ #include <ipxe/rtc_entropy.h>
++#include <ipxe/rdrand.h>
+ 
+ #endif /* _BITS_ENTROPY_H */
+diff --git a/src/arch/x86/include/bits/errfile.h b/src/arch/x86/include/bits/errfile.h
+index b0ae1abc..b5316a58 100644
+--- a/src/arch/x86/include/bits/errfile.h
++++ b/src/arch/x86/include/bits/errfile.h
+@@ -28,6 +28,7 @@ FILE_LICENCE ( GPL2_OR_LATER_OR_UBDL );
+ #define ERRFILE_cpuid		( ERRFILE_ARCH | ERRFILE_CORE | 0x00110000 )
+ #define ERRFILE_rdtsc_timer	( ERRFILE_ARCH | ERRFILE_CORE | 0x00120000 )
+ #define ERRFILE_acpi_timer	( ERRFILE_ARCH | ERRFILE_CORE | 0x00130000 )
++#define ERRFILE_rdrand		( ERRFILE_ARCH | ERRFILE_CORE | 0x00140000 )
+ 
+ #define ERRFILE_bootsector     ( ERRFILE_ARCH | ERRFILE_IMAGE | 0x00000000 )
+ #define ERRFILE_bzimage	       ( ERRFILE_ARCH | ERRFILE_IMAGE | 0x00010000 )
+diff --git a/src/arch/x86/include/ipxe/cpuid.h b/src/arch/x86/include/ipxe/cpuid.h
+index 3983dfb8..90d1bf01 100644
+--- a/src/arch/x86/include/ipxe/cpuid.h
++++ b/src/arch/x86/include/ipxe/cpuid.h
+@@ -39,6 +39,9 @@ struct x86_features {
+ /** Get standard features */
+ #define CPUID_FEATURES 0x00000001UL
+ 
++/** RDRAND instruction is supported */
++#define CPUID_FEATURES_INTEL_ECX_RDRAND 0x40000000UL
++
+ /** Hypervisor is present */
+ #define CPUID_FEATURES_INTEL_ECX_HYPERVISOR 0x80000000UL
+ 
+diff --git a/src/arch/x86/include/ipxe/rdrand.h b/src/arch/x86/include/ipxe/rdrand.h
+new file mode 100644
+index 00000000..c9c170fb
+--- /dev/null
++++ b/src/arch/x86/include/ipxe/rdrand.h
+@@ -0,0 +1,37 @@
++#ifndef _IPXE_RDRAND_H
++#define _IPXE_RDRAND_H
++
++/** @file
++ *
++ * Hardware random number generator
++ *
++ */
++
++FILE_LICENCE ( GPL2_OR_LATER_OR_UBDL );
++
++#include <stdint.h>
++#include <ipxe/drbg.h>
++
++#ifdef ENTROPY_RDRAND
++#define ENTROPY_PREFIX_rdrand
++#else
++#define ENTROPY_PREFIX_rdrand __rdrand_
++#endif
++
++/**
++ * min-entropy per sample
++ *
++ * @ret min_entropy	min-entropy of each sample
++ */
++static inline __always_inline min_entropy_t
++ENTROPY_INLINE ( rdrand, min_entropy_per_sample ) ( void ) {
++
++	/* Data returned by RDRAND is theoretically full entropy, up
++	 * to a security strength of 128 bits.
++	 */
++	if ( DRBG_SECURITY_STRENGTH > 128 )
++		return 0;
++	return MIN_ENTROPY ( 8 * sizeof ( noise_sample_t ) );
++}
++
++#endif /* _IPXE_RDRAND_H */
+-- 
+2.47.0
+
