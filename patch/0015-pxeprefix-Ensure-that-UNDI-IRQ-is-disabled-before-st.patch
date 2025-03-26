@@ -1,0 +1,125 @@
+From 4134280bcd93be43143f11ee41fcdadad90c5672 Mon Sep 17 00:00:00 2001
+From: Michael Brown <mcb30@ipxe.org>
+Date: Wed, 26 Mar 2025 14:49:08 +0000
+Subject: [PATCH 2/3] [pxeprefix] Ensure that UNDI IRQ is disabled before
+ starting iPXE
+
+When using the undionly.kkpxe binary (which is never recommended), the
+UNDI interrupt may still be enabled when iPXE starts up.  If the PXE
+base code interrupt handler is not well-behaved, this can result in
+undefined behaviour when interrupts are first enabled (e.g. for
+entropy gathering, or for allowing the timer tick to occur).
+
+Fix by detecting and disabling the UNDI interrupt during the prefix
+code.
+
+Signed-off-by: Michael Brown <mcb30@ipxe.org>
+---
+ src/arch/x86/drivers/net/undinet.c |  4 +++
+ src/arch/x86/prefix/pxeprefix.S    | 54 ++++++++++++++++++++++++++++++
+ 2 files changed, 58 insertions(+)
+
+diff --git a/src/arch/x86/drivers/net/undinet.c b/src/arch/x86/drivers/net/undinet.c
+index 43cb18bf..cdb39c74 100644
+--- a/src/arch/x86/drivers/net/undinet.c
++++ b/src/arch/x86/drivers/net/undinet.c
+@@ -972,6 +972,10 @@ int undinet_probe ( struct undi_device *undi, struct device *dev ) {
+ 	}
+ 	DBGC ( undinic, "UNDINIC %p has MAC address %s and IRQ %d\n",
+ 	       undinic, eth_ntoa ( netdev->hw_addr ), undinic->irq );
++	if ( undinic->irq ) {
++		/* Sanity check - prefix should have disabled the IRQ */
++		assert ( ! irq_enabled ( undinic->irq ) );
++	}
+ 
+ 	/* Get interface information */
+ 	memset ( &undi_iface, 0, sizeof ( undi_iface ) );
+diff --git a/src/arch/x86/prefix/pxeprefix.S b/src/arch/x86/prefix/pxeprefix.S
+index 0842fcac..2ac1bc76 100644
+--- a/src/arch/x86/prefix/pxeprefix.S
++++ b/src/arch/x86/prefix/pxeprefix.S
+@@ -1,6 +1,7 @@
+ FILE_LICENCE ( GPL2_OR_LATER_OR_UBDL )
+ 
+ #define PXENV_UNDI_SHUTDOWN		0x0005
++#define PXENV_UNDI_GET_INFORMATION	0x000c
+ #define	PXENV_UNDI_GET_NIC_TYPE		0x0012
+ #define PXENV_UNDI_GET_IFACE_INFO	0x0013
+ #define	PXENV_STOP_UNDI			0x0015
+@@ -380,6 +381,33 @@ no_physical_device:
+ 
+ 99:
+ 
++/*****************************************************************************
++ * Get IRQ number
++ *****************************************************************************
++ */
++get_irq:
++	/* Issue PXENV_UNDI_GET_INFORMATION */
++	movw	$PXENV_UNDI_GET_INFORMATION, %bx
++	call	pxe_call
++	jnc	1f
++	call	print_pxe_error
++	jmp	99f
++1:	/* Check for a valid IRQ number */
++	movw	( pxe_parameter_structure + 0x04 ), %ax
++	testw	%ax, %ax
++	jz	99f
++	cmpw	$15, %ax
++	ja	99f
++	/* Store IRQ number */
++	movw	%ax, undi_irq
++	movw	$10f, %si
++	call	print_message
++	call	print_word
++	.section ".prefix.data", "aw", @progbits
++10:	.asciz	", IRQ "
++	.previous
++99:
++
+ /*****************************************************************************
+  * Determine interface type
+  *****************************************************************************
+@@ -470,6 +498,30 @@ pxe_cmdline:
+ 	.long	0
+ 	.previous
+ 
++/*****************************************************************************
++ * Ensure NIC interrupt is disabled
++ *****************************************************************************
++ */
++disable_irq:
++	/* Check for a recorded IRQ number */
++	movw	undi_irq, %cx
++	testw	%cx, %cx
++	jz	99f
++	/* Calculate IMR */
++	movw	%cx, %dx
++	shlw	$4, %dx
++	andb	$0x80, %dl
++	orb	$0x21, %dl
++	/* Calculate mask value */
++	movb	$0x01, %bl
++	andb	$0x07, %cl
++	shlb	%cl, %bl
++	/* Mask interrupt */
++	inb	%dx, %al
++	orb	%bl, %al
++	outb	%al, %dx
++99:
++
+ /*****************************************************************************
+  * Leave NIC in a safe state
+  *****************************************************************************
+@@ -759,6 +811,8 @@ undi_data_segoff:
+ undi_data_size:		.word 0
+ undi_data_segment:	.word 0
+ 
++undi_irq:		.word 0
++
+ pxe_hacks:		.word 0
+ 
+ /* The following fields are part of a struct undi_device */
+-- 
+2.48.1
+

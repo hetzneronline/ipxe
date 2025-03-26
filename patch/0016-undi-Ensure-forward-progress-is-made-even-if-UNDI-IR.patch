@@ -1,0 +1,101 @@
+From 0b606221cb0c5c62502709f9918b06b8790d61c3 Mon Sep 17 00:00:00 2001
+From: Michael Brown <mcb30@ipxe.org>
+Date: Wed, 26 Mar 2025 13:58:22 +0000
+Subject: [PATCH 3/3] [undi] Ensure forward progress is made even if UNDI IRQ
+ is stuck
+
+If the UNDI interrupt remains constantly asserted (e.g. because the
+BIOS has enabled interrupts for an unrelated device sharing the same
+IRQ, or because of bugs in the OEM UNDI driver), then we may get stuck
+in an interrupt storm.
+
+We cannot safely chain to the previous interrupt handler (which could
+plausibly handle an unrelated device interrupt) since there is no
+well-defined behaviour for previous interrupt handlers.  We have
+observed BIOSes to provide default interrupt handlers that variously
+do nothing, send EOI, disable the IRQ, or crash the system.
+
+Fix by disabling the UNDI interrupt whenever our handler is triggered,
+and rearm it as needed when polling the network device.  This ensures
+that forward progress continues to be made even if something causes
+the interrupt to be constantly asserted.
+
+Signed-off-by: Michael Brown <mcb30@ipxe.org>
+---
+ src/arch/x86/drivers/net/undiisr.S | 10 +++++++++-
+ src/arch/x86/drivers/net/undinet.c | 23 +++++++++++++++++++++++
+ 2 files changed, 32 insertions(+), 1 deletion(-)
+
+diff --git a/src/arch/x86/drivers/net/undiisr.S b/src/arch/x86/drivers/net/undiisr.S
+index 8ba5c535..0b07cb39 100644
+--- a/src/arch/x86/drivers/net/undiisr.S
++++ b/src/arch/x86/drivers/net/undiisr.S
+@@ -33,8 +33,16 @@ undiisr:
+ 	/* Check that we have an UNDI entry point */
+ 	cmpw	$0, undinet_entry_point
+ 	je	chain
+-	
++
++	/* Mask interrupt and set rearm flag */
++	movw	undiisr_imr, %dx
++	inb	%dx, %al
++	orb	undiisr_bit, %al
++	outb	%al, %dx
++	movb	%al, undiisr_rearm
++
+ 	/* Issue UNDI API call */
++	movw	%ds, %ax
+ 	movw	%ax, %es
+ 	movw	$undinet_params, %di
+ 	movw	$PXENV_UNDI_ISR, %bx
+diff --git a/src/arch/x86/drivers/net/undinet.c b/src/arch/x86/drivers/net/undinet.c
+index cdb39c74..60e7ad79 100644
+--- a/src/arch/x86/drivers/net/undinet.c
++++ b/src/arch/x86/drivers/net/undinet.c
+@@ -373,6 +373,18 @@ extern void undiisr ( void );
+ uint8_t __data16 ( undiisr_irq );
+ #define undiisr_irq __use_data16 ( undiisr_irq )
+ 
++/** IRQ mask register */
++uint16_t __data16 ( undiisr_imr );
++#define undiisr_imr __use_data16 ( undiisr_imr )
++
++/** IRQ mask bit */
++uint8_t __data16 ( undiisr_bit );
++#define undiisr_bit __use_data16 ( undiisr_bit )
++
++/** IRQ rearm flag */
++uint8_t __data16 ( undiisr_rearm );
++#define undiisr_rearm __use_data16 ( undiisr_rearm )
++
+ /** IRQ chain vector */
+ struct segoff __data16 ( undiisr_next_handler );
+ #define undiisr_next_handler __use_data16 ( undiisr_next_handler )
+@@ -395,6 +407,9 @@ static void undinet_hook_isr ( unsigned int irq ) {
+ 	assert ( undiisr_irq == 0 );
+ 
+ 	undiisr_irq = irq;
++	undiisr_imr = IMR_REG ( irq );
++	undiisr_bit = IMR_BIT ( irq );
++	undiisr_rearm = 0;
+ 	hook_bios_interrupt ( IRQ_INT ( irq ), ( ( intptr_t ) undiisr ),
+ 			      &undiisr_next_handler );
+ }
+@@ -588,6 +603,14 @@ static void undinet_poll ( struct net_device *netdev ) {
+ 		 * support interrupts.
+ 		 */
+ 		if ( ! undinet_isr_triggered() ) {
++
++			/* Rearm interrupt if needed */
++			if ( undiisr_rearm ) {
++				undiisr_rearm = 0;
++				assert ( undinic->irq != 0 );
++				enable_irq ( undinic->irq );
++			}
++
+ 			/* Allow interrupt to occur */
+ 			profile_start ( &undinet_irq_profiler );
+ 			__asm__ __volatile__ ( "sti\n\t"
+-- 
+2.48.1
+

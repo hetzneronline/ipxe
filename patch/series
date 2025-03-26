@@ -13,3 +13,7 @@
 0011-rng-Check-for-several-functioning-RTC-interrupts.patch
 0012-rng-Add-RDRAND-as-an-entropy-source.patch
 0013-rng-Allow-entropy-source-to-be-selected-at-runtime.patch
+
+0014-pxeprefix-Work-around-missing-type-values-from-PXENV.patch
+0015-pxeprefix-Ensure-that-UNDI-IRQ-is-disabled-before-st.patch
+0016-undi-Ensure-forward-progress-is-made-even-if-UNDI-IR.patch
