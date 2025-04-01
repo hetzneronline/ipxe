@@ -17,3 +17,6 @@
 0014-pxeprefix-Work-around-missing-type-values-from-PXENV.patch
 0015-pxeprefix-Ensure-that-UNDI-IRQ-is-disabled-before-st.patch
 0016-undi-Ensure-forward-progress-is-made-even-if-UNDI-IR.patch
+
+0017-pic8259-Return-previous-state-when-enabling-or-disab.patch
+0018-rng-Restore-state-of-IRQ-8-and-PIE-when-disabling-en.patch
