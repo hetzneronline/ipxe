@@ -4,12 +4,6 @@ Date: Thu, 12 Jan 2023 15:30:47 +0100
 Subject: [PATCH] [dhcp/ipv4] Support for DHCP option 121: Classless static
  route option
 
-The implementation is based upon Raphael's initial approach [1], but fixes
-some issues that caused memory corruption on Legacy systems.
-
-[1] https://github.com/ipxe/ipxe/pull/104
-
-Signed-off-by: Raphael Pour <raphael.pour@hetzner.com>
 Signed-off-by: Tom Siewert <tom.siewert@hetzner.com>
 ---
  src/include/ipxe/dhcp.h      |  6 +++
