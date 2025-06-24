@@ -1,276 +1,1318 @@
-From c4a36b256354e00f38d3ae3dbe99e2ea7b00999a Mon Sep 17 00:00:00 2001
-From: Tom Siewert <tom.siewert@hetzner.com>
-Date: Thu, 12 Jan 2023 15:30:47 +0100
-Subject: [PATCH] [dhcp/ipv4] Support for DHCP option 121: Classless static
- route option
+From c9372bda9277c0761303c187e4d6da66486f90f8 Mon Sep 17 00:00:00 2001
+From: Michael Brown <mcb30@ipxe.org>
+Date: Sat, 14 Jan 2023 00:09:20 +0000
+Subject: [PATCH 1/4] [netdevice] Separate concept of scope ID from network
+ device name index
 
-Signed-off-by: Tom Siewert <tom.siewert@hetzner.com>
+The network device index currently serves two purposes: acting as a
+sequential index for network device names ("net0", "net1", etc), and
+acting as an opaque unique integer identifier used in socket address
+scope IDs.
+
+There is no particular need for these usages to be linked, and it can
+lead to situations in which devices are named unexpectedly.  For
+example: if a system has two network devices "net0" and "net1", a VLAN
+is created as "net1-42", and then a USB NIC is connected, then the USB
+NIC will be named "net3" rather than the expected "net2" since the
+VLAN device "net1-42" will have consumed an index.
+
+Separate the usages: rename the "index" field to "scope_id" (matching
+its one and only use case), and assign the name without reference to
+the scope ID by finding the first unused name.  For consistency,
+assign the scope ID by similarly finding the first unused scope ID.
+
+Signed-off-by: Michael Brown <mcb30@ipxe.org>
+(cherry picked from commit 47af48012e2afaaf56108466fb967009670660bb)
 ---
- src/include/ipxe/dhcp.h      |  6 +++
- src/include/ipxe/dhcpopts.h  |  5 +-
- src/include/ipxe/ip.h        |  7 +++
- src/include/ipxe/netdevice.h |  6 +++
- src/net/dhcpopts.c           |  6 +--
- src/net/ipv4.c               | 91 ++++++++++++++++++++++++++++++------
- src/net/udp/dhcp.c           | 22 +++++++++
- 7 files changed, 126 insertions(+), 17 deletions(-)
+ src/include/ipxe/netdevice.h |  6 +++---
+ src/interface/efi/efi_pxe.c  |  2 +-
+ src/interface/efi/efi_snp.c  |  4 ++--
+ src/net/ipv4.c               |  2 +-
+ src/net/ipv6.c               | 12 ++++++------
+ src/net/ndp.c                |  4 ++--
+ src/net/netdevice.c          | 31 +++++++++++++++++--------------
+ src/net/peerdisc.c           |  2 +-
+ src/net/udp/dhcpv6.c         |  2 +-
+ src/tests/ipv6_test.c        |  4 ++--
+ 10 files changed, 36 insertions(+), 33 deletions(-)
+
+diff --git a/src/include/ipxe/netdevice.h b/src/include/ipxe/netdevice.h
+index 294f7b36..29358dba 100644
+--- a/src/include/ipxe/netdevice.h
++++ b/src/include/ipxe/netdevice.h
+@@ -356,8 +356,8 @@ struct net_device {
+ 	struct list_head list;
+ 	/** List of open network devices */
+ 	struct list_head open_list;
+-	/** Index of this network device */
+-	unsigned int index;
++	/** Scope ID */
++	unsigned int scope_id;
+ 	/** Name of this network device */
+ 	char name[NETDEV_NAME_LEN];
+ 	/** Underlying hardware device */
+@@ -726,7 +726,7 @@ extern void netdev_close ( struct net_device *netdev );
+ extern void unregister_netdev ( struct net_device *netdev );
+ extern void netdev_irq ( struct net_device *netdev, int enable );
+ extern struct net_device * find_netdev ( const char *name );
+-extern struct net_device * find_netdev_by_index ( unsigned int index );
++extern struct net_device * find_netdev_by_scope_id ( unsigned int scope_id );
+ extern struct net_device * find_netdev_by_location ( unsigned int bus_type,
+ 						     unsigned int location );
+ extern struct net_device *
+diff --git a/src/interface/efi/efi_pxe.c b/src/interface/efi/efi_pxe.c
+index 15224a5e..843ebb5e 100644
+--- a/src/interface/efi/efi_pxe.c
++++ b/src/interface/efi/efi_pxe.c
+@@ -199,7 +199,7 @@ static void efi_pxe_ip_sockaddr ( struct efi_pxe *pxe, EFI_IP_ADDRESS *ip,
+ 	memset ( sockaddr, 0, sizeof ( *sockaddr ) );
+ 	sockaddr->sa.sa_family = pxe->tcpip->sa_family;
+ 	memcpy ( &sockaddr->se.se_addr, ip, pxe->net->net_addr_len );
+-	sockaddr->se.se_scope_id = pxe->netdev->index;
++	sockaddr->se.se_scope_id = pxe->netdev->scope_id;
+ }
+ 
+ /**
+diff --git a/src/interface/efi/efi_snp.c b/src/interface/efi/efi_snp.c
+index 088a3fdb..c4f7d4ea 100644
+--- a/src/interface/efi/efi_snp.c
++++ b/src/interface/efi/efi_snp.c
+@@ -934,11 +934,11 @@ static uint8_t efi_undi_checksum ( void *data, size_t len ) {
+  */
+ static unsigned int efi_undi_ifnum ( struct efi_snp_device *snpdev ) {
+ 
+-	/* iPXE network device indexes are one-based (leaving zero
++	/* iPXE network device scope IDs are one-based (leaving zero
+ 	 * meaning "unspecified").  UNDI interface numbers are
+ 	 * zero-based.
+ 	 */
+-	return ( snpdev->netdev->index - 1 );
++	return ( snpdev->netdev->scope_id - 1 );
+ }
+ 
+ /**
+diff --git a/src/net/ipv4.c b/src/net/ipv4.c
+index b9ce5e7f..b91fa2ad 100644
+--- a/src/net/ipv4.c
++++ b/src/net/ipv4.c
+@@ -163,7 +163,7 @@ static struct ipv4_miniroute * ipv4_route ( unsigned int scope_id,
+ 			/* If destination is non-global, and the scope ID
+ 			 * matches this network device, then use this route.
+ 			 */
+-			if ( miniroute->netdev->index == scope_id )
++			if ( miniroute->netdev->scope_id == scope_id )
+ 				return miniroute;
+ 
+ 		} else {
+diff --git a/src/net/ipv6.c b/src/net/ipv6.c
+index 901203c4..ef5e51da 100644
+--- a/src/net/ipv6.c
++++ b/src/net/ipv6.c
+@@ -330,7 +330,7 @@ struct ipv6_miniroute * ipv6_route ( unsigned int scope_id,
+ 		/* Skip entries with a non-matching scope ID, if
+ 		 * destination specifies a scope ID.
+ 		 */
+-		if ( scope_id && ( miniroute->netdev->index != scope_id ) )
++		if ( scope_id && ( miniroute->netdev->scope_id != scope_id ) )
+ 			continue;
+ 
+ 		/* Skip entries that are out of scope */
+@@ -789,12 +789,12 @@ static int ipv6_rx ( struct io_buffer *iobuf, struct net_device *netdev,
+ 	src.sin6.sin6_family = AF_INET6;
+ 	memcpy ( &src.sin6.sin6_addr, &iphdr->src,
+ 		 sizeof ( src.sin6.sin6_addr ) );
+-	src.sin6.sin6_scope_id = netdev->index;
++	src.sin6.sin6_scope_id = netdev->scope_id;
+ 	memset ( &dest, 0, sizeof ( dest ) );
+ 	dest.sin6.sin6_family = AF_INET6;
+ 	memcpy ( &dest.sin6.sin6_addr, &iphdr->dest,
+ 		 sizeof ( dest.sin6.sin6_addr ) );
+-	dest.sin6.sin6_scope_id = netdev->index;
++	dest.sin6.sin6_scope_id = netdev->scope_id;
+ 	iob_pull ( iobuf, hdrlen );
+ 	pshdr_csum = ipv6_pshdr_chksum ( iphdr, iob_len ( iobuf ),
+ 					 next_header, TCPIP_EMPTY_CSUM );
+@@ -957,7 +957,7 @@ static const char * ipv6_sock_ntoa ( struct sockaddr *sa ) {
+ 
+ 	/* Identify network device, if applicable */
+ 	if ( IN6_IS_ADDR_LINKLOCAL ( in ) || IN6_IS_ADDR_MULTICAST ( in ) ) {
+-		netdev = find_netdev_by_index ( sin6->sin6_scope_id );
++		netdev = find_netdev_by_scope_id ( sin6->sin6_scope_id );
+ 		netdev_name = ( netdev ? netdev->name : "UNKNOWN" );
+ 	} else {
+ 		netdev_name = NULL;
+@@ -1020,7 +1020,7 @@ static int ipv6_sock_aton ( const char *string, struct sockaddr *sa ) {
+ 			rc = -ENODEV;
+ 			goto err_find_netdev;
+ 		}
+-		sin6->sin6_scope_id = netdev->index;
++		sin6->sin6_scope_id = netdev->scope_id;
+ 
+ 	} else if ( IN6_IS_ADDR_LINKLOCAL ( &in ) ||
+ 		    IN6_IS_ADDR_MULTICAST ( &in ) ) {
+@@ -1031,7 +1031,7 @@ static int ipv6_sock_aton ( const char *string, struct sockaddr *sa ) {
+ 		 */
+ 		netdev = last_opened_netdev();
+ 		if ( netdev )
+-			sin6->sin6_scope_id = netdev->index;
++			sin6->sin6_scope_id = netdev->scope_id;
+ 	}
+ 
+ 	/* Copy IPv6 address portion to socket address */
+diff --git a/src/net/ndp.c b/src/net/ndp.c
+index c8e8ebad..373a9360 100644
+--- a/src/net/ndp.c
++++ b/src/net/ndp.c
+@@ -140,7 +140,7 @@ static int ndp_tx_request ( struct net_device *netdev,
+ 	/* Construct multicast destination address */
+ 	memset ( &sin6_dest, 0, sizeof ( sin6_dest ) );
+ 	sin6_dest.sin6_family = AF_INET6;
+-	sin6_dest.sin6_scope_id = netdev->index;
++	sin6_dest.sin6_scope_id = netdev->scope_id;
+ 	ipv6_solicited_node ( &sin6_dest.sin6_addr, net_dest );
+ 
+ 	/* Construct neighbour header */
+@@ -177,7 +177,7 @@ static int ndp_tx_router_solicitation ( struct net_device *netdev ) {
+ 	/* Construct multicast destination address */
+ 	memset ( &sin6_dest, 0, sizeof ( sin6_dest ) );
+ 	sin6_dest.sin6_family = AF_INET6;
+-	sin6_dest.sin6_scope_id = netdev->index;
++	sin6_dest.sin6_scope_id = netdev->scope_id;
+ 	ipv6_all_routers ( &sin6_dest.sin6_addr );
+ 
+ 	/* Construct router solicitation */
+diff --git a/src/net/netdevice.c b/src/net/netdevice.c
+index 51d1831c..597c6228 100644
+--- a/src/net/netdevice.c
++++ b/src/net/netdevice.c
+@@ -55,9 +55,6 @@ struct list_head net_devices = LIST_HEAD_INIT ( net_devices );
+ /** List of open network devices, in reverse order of opening */
+ static struct list_head open_net_devices = LIST_HEAD_INIT ( open_net_devices );
+ 
+-/** Network device index */
+-static unsigned int netdev_index = 0;
+-
+ /** Network polling profiler */
+ static struct profiler net_poll_profiler __profiler = { .name = "net.poll" };
+ 
+@@ -723,6 +720,7 @@ int register_netdev ( struct net_device *netdev ) {
+ 	struct ll_protocol *ll_protocol = netdev->ll_protocol;
+ 	struct net_driver *driver;
+ 	struct net_device *duplicate;
++	unsigned int i;
+ 	uint32_t seed;
+ 	int rc;
+ 
+@@ -757,12 +755,21 @@ int register_netdev ( struct net_device *netdev ) {
+ 		goto err_duplicate;
+ 	}
+ 
+-	/* Record device index and create device name */
++	/* Assign a unique device name, if not already set */
+ 	if ( netdev->name[0] == '\0' ) {
+-		snprintf ( netdev->name, sizeof ( netdev->name ), "net%d",
+-			   netdev_index );
++		for ( i = 0 ; ; i++ ) {
++			snprintf ( netdev->name, sizeof ( netdev->name ),
++				   "net%d", i );
++			if ( find_netdev ( netdev->name ) == NULL )
++				break;
++		}
++	}
++
++	/* Assign a unique non-zero scope ID */
++	for ( netdev->scope_id = 1 ; ; netdev->scope_id++ ) {
++		if ( find_netdev_by_scope_id ( netdev->scope_id ) == NULL )
++			break;
+ 	}
+-	netdev->index = ++netdev_index;
+ 
+ 	/* Use least significant bits of the link-layer address to
+ 	 * improve the randomness of the (non-cryptographic) random
+@@ -916,10 +923,6 @@ void unregister_netdev ( struct net_device *netdev ) {
+ 	DBGC ( netdev, "NETDEV %s unregistered\n", netdev->name );
+ 	list_del ( &netdev->list );
+ 	netdev_put ( netdev );
+-
+-	/* Reset network device index if no devices remain */
+-	if ( list_empty ( &net_devices ) )
+-		netdev_index = 0;
+ }
+ 
+ /** Enable or disable interrupts
+@@ -962,17 +965,17 @@ struct net_device * find_netdev ( const char *name ) {
+ }
+ 
+ /**
+- * Get network device by index
++ * Get network device by scope ID
+  *
+  * @v index		Network device index
+  * @ret netdev		Network device, or NULL
+  */
+-struct net_device * find_netdev_by_index ( unsigned int index ) {
++struct net_device * find_netdev_by_scope_id ( unsigned int scope_id ) {
+ 	struct net_device *netdev;
+ 
+ 	/* Identify network device by index */
+ 	list_for_each_entry ( netdev, &net_devices, list ) {
+-		if ( netdev->index == index )
++		if ( netdev->scope_id == scope_id )
+ 			return netdev;
+ 	}
+ 
+diff --git a/src/net/peerdisc.c b/src/net/peerdisc.c
+index d7e0d298..86ff94a8 100644
+--- a/src/net/peerdisc.c
++++ b/src/net/peerdisc.c
+@@ -189,7 +189,7 @@ static void peerdisc_socket_tx ( const char *uuid, const char *id ) {
+ 			/* Skip unopened network devices */
+ 			if ( ! netdev_is_open ( netdev ) )
+ 				continue;
+-			address.st.st_scope_id = netdev->index;
++			address.st.st_scope_id = netdev->scope_id;
+ 
+ 			/* Discard request (for test purposes) if applicable */
+ 			if ( inject_fault ( PEERDISC_DISCARD_RATE ) )
+diff --git a/src/net/udp/dhcpv6.c b/src/net/udp/dhcpv6.c
+index 253032e4..28c6f7be 100644
+--- a/src/net/udp/dhcpv6.c
++++ b/src/net/udp/dhcpv6.c
+@@ -955,7 +955,7 @@ int start_dhcpv6 ( struct interface *job, struct net_device *netdev,
+ 	addresses.client.sin6.sin6_port = htons ( DHCPV6_CLIENT_PORT );
+ 	addresses.server.sin6.sin6_family = AF_INET6;
+ 	ipv6_all_dhcp_relay_and_servers ( &addresses.server.sin6.sin6_addr );
+-	addresses.server.sin6.sin6_scope_id = netdev->index;
++	addresses.server.sin6.sin6_scope_id = netdev->scope_id;
+ 	addresses.server.sin6.sin6_port = htons ( DHCPV6_SERVER_PORT );
+ 
+ 	/* Construct client DUID from system UUID */
+diff --git a/src/tests/ipv6_test.c b/src/tests/ipv6_test.c
+index de8edc8a..3b7d813a 100644
+--- a/src/tests/ipv6_test.c
++++ b/src/tests/ipv6_test.c
+@@ -127,7 +127,7 @@ static const struct in6_addr sample_multicast = {
+ /** Dummy network device used for routing tests */
+ static struct net_device ipv6_test_netdev = {
+ 	.refcnt = REF_INIT ( ref_no_free ),
+-	.index = 42,
++	.scope_id = 42,
+ 	.state = NETDEV_OPEN,
+ };
+ 
+@@ -349,7 +349,7 @@ static void ipv6_route_okx ( struct ipv6_test_table *table, const char *dest,
+ 
+ 	/* Perform routing */
+ 	actual = &in_dest;
+-	miniroute = ipv6_route ( ipv6_test_netdev.index, &actual );
++	miniroute = ipv6_route ( ipv6_test_netdev.scope_id, &actual );
+ 
+ 	/* Validate result */
+ 	if ( src ) {
+-- 
+2.49.0
+
+From b114a6893ec35bc2239f2834995ef4ae6c0043c1 Mon Sep 17 00:00:00 2001
+From: Michael Brown <mcb30@ipxe.org>
+Date: Wed, 26 Jun 2024 04:29:38 -0700
+Subject: [PATCH 2/4] [ipv4] Support small subnets with no directed broadcast
+ address
+
+In a small subnet (with a /31 or /32 subnet mask), all addresses
+within the subnet are valid host addresses: there is no separate
+network address or directed broadcast address.
+
+The logic used in iPXE to determine whether or not to use a link-layer
+broadcast address will currently fail in these subnets.  In a /31
+subnet, the higher of the two host addresses (i.e. the address with
+all host bits set) will be treated as a broadcast address.  In a /32
+subnet, the single valid host address will be treated as a broadcast
+address.
+
+Fix by adding the concept of a host mask, defined such that an address
+in the local subnet with all of the mask bits set to zero represents
+the network address, and an address in the local subnet with all of
+the mask bits set to one represents the directed broadcast address.
+For most subnets, this is simply the inverse of the subnet mask.  For
+small subnets (/31 or /32) we can obtain the desired behaviour by
+setting the host mask to all ones, so that only the local broadcast
+address 255.255.255.255 will be treated as a broadcast address.
+
+Originally-fixed-by: Lukas Stockner <lstockner@genesiscloud.com>
+Signed-off-by: Michael Brown <mcb30@ipxe.org>
+(cherry picked from commit 77acf6b41f705384593a057c2bea057283bf429b)
+---
+ src/include/ipxe/in.h |  2 ++
+ src/include/ipxe/ip.h | 22 ++++++++++++++++++++--
+ src/net/ipv4.c        | 18 ++++++++++++++----
+ 3 files changed, 36 insertions(+), 6 deletions(-)
+
+diff --git a/src/include/ipxe/in.h b/src/include/ipxe/in.h
+index 3044d631..05a8122e 100644
+--- a/src/include/ipxe/in.h
++++ b/src/include/ipxe/in.h
+@@ -33,6 +33,8 @@ FILE_LICENCE ( GPL2_OR_LATER_OR_UBDL );
+ #define IN_IS_MULTICAST( addr ) \
+ 	( ( (addr) & htonl ( 0xf0000000 ) ) == htonl ( 0xe0000000 ) )
+ 
++#define IN_IS_SMALL( mask ) ( (mask) & htonl ( 0x00000003 ) )
++
+ /**
+  * IP address structure
+  */
+diff --git a/src/include/ipxe/ip.h b/src/include/ipxe/ip.h
+index 285be6dc..b1b5cb2e 100644
+--- a/src/include/ipxe/ip.h
++++ b/src/include/ipxe/ip.h
+@@ -64,9 +64,27 @@ struct ipv4_miniroute {
+ 
+ 	/** IPv4 address */
+ 	struct in_addr address;
+-	/** Subnet mask */
++	/** Subnet mask
++	 *
++	 * An address with all of these bits in common with our IPv4
++	 * address is in the local subnet.
++	 */
+ 	struct in_addr netmask;
+-	/** Gateway address */
++	/** Host mask
++	 *
++	 * An address in the local subnet with all of these bits set
++	 * to zero represents the network address, and an address in
++	 * the local subnet with all of these bits set to one
++	 * represents the directed broadcast address.  All other
++	 * addresses in the local subnet are valid host addresses.
++	 *
++	 * For most subnets, this is the inverse of the subnet mask.
++	 * In a small subnet (/31 or /32) there is no network address
++	 * or directed broadcast address, and all addresses in the
++	 * subnet are valid host addresses.
++	 */
++	struct in_addr hostmask;
++	/** Gateway address, or zero for no gateway */
+ 	struct in_addr gateway;
+ };
+ 
+diff --git a/src/net/ipv4.c b/src/net/ipv4.c
+index b91fa2ad..5d0cb0f9 100644
+--- a/src/net/ipv4.c
++++ b/src/net/ipv4.c
+@@ -85,9 +85,18 @@ static int add_ipv4_miniroute ( struct net_device *netdev,
+ 				struct in_addr address, struct in_addr netmask,
+ 				struct in_addr gateway ) {
+ 	struct ipv4_miniroute *miniroute;
++	struct in_addr hostmask;
++	struct in_addr broadcast;
+ 
++	/* Calculate host mask */
++	hostmask.s_addr = ( IN_IS_SMALL ( netmask.s_addr ) ?
++			    INADDR_NONE : ~netmask.s_addr );
++	broadcast.s_addr = ( address.s_addr | hostmask.s_addr );
++
++	/* Print debugging information */
+ 	DBGC ( netdev, "IPv4 add %s", inet_ntoa ( address ) );
+ 	DBGC ( netdev, "/%s ", inet_ntoa ( netmask ) );
++	DBGC ( netdev, "bc %s ", inet_ntoa ( broadcast ) );
+ 	if ( gateway.s_addr )
+ 		DBGC ( netdev, "gw %s ", inet_ntoa ( gateway ) );
+ 	DBGC ( netdev, "via %s\n", netdev->name );
+@@ -103,8 +112,9 @@ static int add_ipv4_miniroute ( struct net_device *netdev,
+ 	miniroute->netdev = netdev_get ( netdev );
+ 	miniroute->address = address;
+ 	miniroute->netmask = netmask;
++	miniroute->hostmask = hostmask;
+ 	miniroute->gateway = gateway;
+-		
++
+ 	/* Add to end of list if we have a gateway, otherwise
+ 	 * to start of list.
+ 	 */
+@@ -310,7 +320,7 @@ static int ipv4_tx ( struct io_buffer *iobuf,
+ 	struct sockaddr_in *sin_dest = ( ( struct sockaddr_in * ) st_dest );
+ 	struct ipv4_miniroute *miniroute;
+ 	struct in_addr next_hop;
+-	struct in_addr netmask = { .s_addr = 0 };
++	struct in_addr hostmask = { .s_addr = INADDR_NONE };
+ 	uint8_t ll_dest_buf[MAX_LL_ADDR_LEN];
+ 	const void *ll_dest;
+ 	int rc;
+@@ -338,7 +348,7 @@ static int ipv4_tx ( struct io_buffer *iobuf,
+ 	     ( ( miniroute = ipv4_route ( sin_dest->sin_scope_id,
+ 					  &next_hop ) ) != NULL ) ) {
+ 		iphdr->src = miniroute->address;
+-		netmask = miniroute->netmask;
++		hostmask = miniroute->hostmask;
+ 		netdev = miniroute->netdev;
+ 	}
+ 	if ( ! netdev ) {
+@@ -373,7 +383,7 @@ static int ipv4_tx ( struct io_buffer *iobuf,
+ 		ntohs ( iphdr->chksum ) );
+ 
+ 	/* Calculate link-layer destination address, if possible */
+-	if ( ( ( next_hop.s_addr ^ INADDR_BROADCAST ) & ~netmask.s_addr ) == 0){
++	if ( ( ( ~next_hop.s_addr ) & hostmask.s_addr ) == 0 ) {
+ 		/* Broadcast address */
+ 		ipv4_stats.out_bcast_pkts++;
+ 		ll_dest = netdev->ll_broadcast;
+-- 
+2.49.0
+
+From 99013dc93c40faf39e2127c398536ef100df6425 Mon Sep 17 00:00:00 2001
+From: Michael Brown <mcb30@ipxe.org>
+Date: Thu, 5 Jun 2025 16:49:42 +0100
+Subject: [PATCH 3/4] [ipv4] Extend routing mechanism to handle non-default
+ routes
+
+Extend the definition of an IPv4 routing table entry to allow for the
+expression of non-default gateways for specified off-link subnets, and
+of on-link secondary subnets (where we can send directly to the
+destination address even though our source address is not within the
+subnet).
+
+This more precise definition also allows us to correctly handle
+routing in the (uncommon for iPXE) case when multiple network
+interfaces are open concurrently and more than one interface has a
+default gateway.
+
+The common case of a single IPv4 address/netmask and a default gateway
+now results in two routing table entries.  To retain backwards
+compatibility with existing documentation (and to avoid on-screen
+clutter), the "route" command prints default gateways on the same line
+as the locally assigned address.  There is therefore no change in
+output from the "route" command unless explicit additional (off-link
+or on-link) routes are present.
+
+Signed-off-by: Michael Brown <mcb30@ipxe.org>
+(cherry picked from commit e648d23fba09c7e0c50e205448448b132a5711b5)
+---
+ src/include/ipxe/ip.h |  77 ++++++++++++++++-----
+ src/net/ipv4.c        | 116 +++++++++++++++++++++----------
+ src/tests/ipv4_test.c | 154 ------------------------------------------
+ src/usr/route_ipv4.c  |  47 +++++++++++--
+ 4 files changed, 183 insertions(+), 211 deletions(-)
+ delete mode 100644 src/tests/ipv4_test.c
+
+diff --git a/src/include/ipxe/ip.h b/src/include/ipxe/ip.h
+index b1b5cb2e..92a3216e 100644
+--- a/src/include/ipxe/ip.h
++++ b/src/include/ipxe/ip.h
+@@ -54,38 +54,83 @@ struct ipv4_pseudo_header {
+ 	uint16_t len;
+ };
+ 
+-/** An IPv4 address/routing table entry */
++/** An IPv4 address/routing table entry
++ *
++ * Routing table entries are maintained in order of specificity.  For
++ * a given destination address, the first matching table entry will be
++ * used as the egress route.
++ */
+ struct ipv4_miniroute {
+ 	/** List of miniroutes */
+ 	struct list_head list;
+ 
+-	/** Network device */
++	/** Network device
++	 *
++	 * When this routing table entry is matched, this is the
++	 * egress network device to be used.
++	 */
+ 	struct net_device *netdev;
+ 
+-	/** IPv4 address */
++	/** IPv4 address
++	 *
++	 * When this routing table entry is matched, this is the
++	 * source address to be used.
++	 *
++	 * The presence of this routing table entry also indicates
++	 * that this address is a valid local destination address for
++	 * the matching network device.
++	 */
+ 	struct in_addr address;
++	/** Subnet network address
++	 *
++	 * A subnet is a range of addresses defined by a network
++	 * address and subnet mask.  A destination address with all of
++	 * the subnet mask bits in common with the network address is
++	 * within the subnet and therefore matches this routing table
++	 * entry.
++	 */
++	struct in_addr network;
+ 	/** Subnet mask
+ 	 *
+-	 * An address with all of these bits in common with our IPv4
+-	 * address is in the local subnet.
++	 * An address with all of these bits in common with the
++	 * network address matches this routing table entry.
+ 	 */
+ 	struct in_addr netmask;
++	/** Gateway address, or zero
++	 *
++	 * When this routing table entry is matched and this address
++	 * is non-zero, it will be used as the next-hop address.
++	 *
++	 * When this routing table entry is matched and this address
++	 * is zero, the subnet is local (on-link) and the next-hop
++	 * address will be the original destination address.
++	 */
++	struct in_addr gateway;
+ 	/** Host mask
+ 	 *
+-	 * An address in the local subnet with all of these bits set
+-	 * to zero represents the network address, and an address in
+-	 * the local subnet with all of these bits set to one
+-	 * represents the directed broadcast address.  All other
+-	 * addresses in the local subnet are valid host addresses.
++	 * An address in a local subnet with all of these bits set to
++	 * zero represents the network address, and an address in a
++	 * local subnet with all of these bits set to one represents
++	 * the local directed broadcast address.  All other addresses
++	 * in a local subnet are valid host addresses.
++	 *
++	 * For most local subnets, this is the inverse of the subnet
++	 * mask.  In a small subnet (/31 or /32) there is no network
++	 * address or directed broadcast address, and all addresses in
++	 * the subnet are valid host addresses.
+ 	 *
+-	 * For most subnets, this is the inverse of the subnet mask.
+-	 * In a small subnet (/31 or /32) there is no network address
+-	 * or directed broadcast address, and all addresses in the
+-	 * subnet are valid host addresses.
++	 * When this routing table entry is matched and the subnet is
++	 * local, a next-hop address with all of these bits set to one
++	 * will be treated as a local broadcast address.  All other
++	 * next-hop addresses will be treated as unicast addresses.
++	 *
++	 * When this routing table entry is matched and the subnet is
++	 * non-local, the next-hop address is always a unicast
++	 * address.  The host mask for non-local subnets is therefore
++	 * set to @c INADDR_NONE to allow the same logic to be used as
++	 * for local subnets.
+ 	 */
+ 	struct in_addr hostmask;
+-	/** Gateway address, or zero for no gateway */
+-	struct in_addr gateway;
+ };
+ 
+ extern struct list_head ipv4_miniroutes;
+diff --git a/src/net/ipv4.c b/src/net/ipv4.c
+index 5d0cb0f9..5693fa0d 100644
+--- a/src/net/ipv4.c
++++ b/src/net/ipv4.c
+@@ -77,24 +77,32 @@ static struct profiler ipv4_rx_profiler __profiler = { .name = "ipv4.rx" };
+  *
+  * @v netdev		Network device
+  * @v address		IPv4 address
++ * @v network		Subnet address
+  * @v netmask		Subnet mask
+  * @v gateway		Gateway address (if any)
+  * @ret rc		Return status code
+  */
+-static int add_ipv4_miniroute ( struct net_device *netdev,
+-				struct in_addr address, struct in_addr netmask,
++static int ipv4_add_miniroute ( struct net_device *netdev,
++				struct in_addr address,
++				struct in_addr network,
++				struct in_addr netmask,
+ 				struct in_addr gateway ) {
+ 	struct ipv4_miniroute *miniroute;
++	struct ipv4_miniroute *before;
+ 	struct in_addr hostmask;
+ 	struct in_addr broadcast;
+ 
+ 	/* Calculate host mask */
+-	hostmask.s_addr = ( IN_IS_SMALL ( netmask.s_addr ) ?
+-			    INADDR_NONE : ~netmask.s_addr );
+-	broadcast.s_addr = ( address.s_addr | hostmask.s_addr );
++	if ( gateway.s_addr || IN_IS_SMALL ( netmask.s_addr ) ) {
++		hostmask.s_addr = INADDR_NONE;
++	} else {
++		hostmask.s_addr = ~netmask.s_addr;
++	}
++	broadcast.s_addr = ( network.s_addr | hostmask.s_addr );
+ 
+ 	/* Print debugging information */
+ 	DBGC ( netdev, "IPv4 add %s", inet_ntoa ( address ) );
++	DBGC ( netdev, " for %s", inet_ntoa ( network ) );
+ 	DBGC ( netdev, "/%s ", inet_ntoa ( netmask ) );
+ 	DBGC ( netdev, "bc %s ", inet_ntoa ( broadcast ) );
+ 	if ( gateway.s_addr )
+@@ -111,18 +119,49 @@ static int add_ipv4_miniroute ( struct net_device *netdev,
+ 	/* Record routing information */
+ 	miniroute->netdev = netdev_get ( netdev );
+ 	miniroute->address = address;
++	miniroute->network = network;
+ 	miniroute->netmask = netmask;
+ 	miniroute->hostmask = hostmask;
+ 	miniroute->gateway = gateway;
+ 
+-	/* Add to end of list if we have a gateway, otherwise
+-	 * to start of list.
+-	 */
+-	if ( gateway.s_addr ) {
+-		list_add_tail ( &miniroute->list, &ipv4_miniroutes );
+-	} else {
+-		list_add ( &miniroute->list, &ipv4_miniroutes );
++	/* Add to routing table ahead of any less specific routes */
++	list_for_each_entry ( before, &ipv4_miniroutes, list ) {
++		if ( netmask.s_addr & ~before->netmask.s_addr )
++			break;
+ 	}
++	list_add_tail ( &miniroute->list, &before->list );
++
++	return 0;
++}
++
++/**
++ * Add IPv4 minirouting table entries
++ *
++ * @v netdev		Network device
++ * @v address		IPv4 address
++ * @v netmask		Subnet mask
++ * @v gateway		Gateway address (if any)
++ * @ret rc		Return status code
++ */
++static int ipv4_add_miniroutes ( struct net_device *netdev,
++				 struct in_addr address,
++				 struct in_addr netmask,
++				 struct in_addr gateway ) {
++	struct in_addr none = { 0 };
++	struct in_addr network;
++	int rc;
++
++	/* Add local address */
++	network.s_addr = ( address.s_addr & netmask.s_addr );
++	if ( ( rc = ipv4_add_miniroute ( netdev, address, network, netmask,
++					 none ) ) != 0 )
++		return rc;
++
++	/* Add default gateway, if applicable */
++	if ( gateway.s_addr &&
++	     ( ( rc = ipv4_add_miniroute ( netdev, address, none, none,
++					   gateway ) ) != 0 ) )
++		return rc;
+ 
+ 	return 0;
+ }
+@@ -132,10 +171,11 @@ static int add_ipv4_miniroute ( struct net_device *netdev,
+  *
+  * @v miniroute		Routing table entry
+  */
+-static void del_ipv4_miniroute ( struct ipv4_miniroute *miniroute ) {
++static void ipv4_del_miniroute ( struct ipv4_miniroute *miniroute ) {
+ 	struct net_device *netdev = miniroute->netdev;
+ 
+ 	DBGC ( netdev, "IPv4 del %s", inet_ntoa ( miniroute->address ) );
++	DBGC ( netdev, " for %s", inet_ntoa ( miniroute->network ) );
+ 	DBGC ( netdev, "/%s ", inet_ntoa ( miniroute->netmask ) );
+ 	if ( miniroute->gateway.s_addr )
+ 		DBGC ( netdev, "gw %s ", inet_ntoa ( miniroute->gateway ) );
+@@ -146,6 +186,19 @@ static void del_ipv4_miniroute ( struct ipv4_miniroute *miniroute ) {
+ 	free ( miniroute );
+ }
+ 
++/**
++ * Delete IPv4 minirouting table entries
++ *
++ */
++static void ipv4_del_miniroutes ( void ) {
++	struct ipv4_miniroute *miniroute;
++	struct ipv4_miniroute *tmp;
++
++	/* Delete all existing routes */
++	list_for_each_entry_safe ( miniroute, tmp, &ipv4_miniroutes, list )
++		ipv4_del_miniroute ( miniroute );
++}
++
+ /**
+  * Perform IPv4 routing
+  *
+@@ -170,27 +223,23 @@ static struct ipv4_miniroute * ipv4_route ( unsigned int scope_id,
+ 
+ 		if ( IN_IS_MULTICAST ( dest->s_addr ) ) {
+ 
+-			/* If destination is non-global, and the scope ID
+-			 * matches this network device, then use this route.
++			/* If destination is non-global, and the scope
++			 * ID matches this network device, then use
++			 * the first matching route.
+ 			 */
+ 			if ( miniroute->netdev->scope_id == scope_id )
+ 				return miniroute;
+ 
+ 		} else {
+ 
+-			/* If destination is an on-link global
+-			 * address, then use this route.
++			/* If destination is global, then use the
++			 * first matching route (via its gateway if
++			 * specified).
+ 			 */
+-			if ( ( ( dest->s_addr ^ miniroute->address.s_addr )
+-			       & miniroute->netmask.s_addr ) == 0 )
+-				return miniroute;
+-
+-			/* If destination is an off-link global
+-			 * address, and we have a default gateway,
+-			 * then use this route.
+-			 */
+-			if ( miniroute->gateway.s_addr ) {
+-				*dest = miniroute->gateway;
++			if ( ( ( dest->s_addr ^ miniroute->network.s_addr )
++			       & miniroute->netmask.s_addr ) == 0 ) {
++				if ( miniroute->gateway.s_addr )
++					*dest = miniroute->gateway;
+ 				return miniroute;
+ 			}
+ 		}
+@@ -913,20 +962,17 @@ static int ipv4_settings ( int ( * apply ) ( struct net_device *netdev,
+  *
+  * @ret rc		Return status code
+  */
+-static int ipv4_create_routes ( void ) {
+-	struct ipv4_miniroute *miniroute;
+-	struct ipv4_miniroute *tmp;
++static int ipv4_apply_routes ( void ) {
+ 	int rc;
+ 
+ 	/* Send gratuitous ARPs for any new IPv4 addresses */
+ 	ipv4_settings ( ipv4_gratuitous_arp );
+ 
+ 	/* Delete all existing routes */
+-	list_for_each_entry_safe ( miniroute, tmp, &ipv4_miniroutes, list )
+-		del_ipv4_miniroute ( miniroute );
++	ipv4_del_miniroutes();
+ 
+-	/* Create a route for each configured network device */
+-	if ( ( rc = ipv4_settings ( add_ipv4_miniroute ) ) != 0 )
++	/* Create routes for each configured network device */
++	if ( ( rc = ipv4_settings ( ipv4_add_miniroutes ) ) != 0 )
+ 		return rc;
+ 
+ 	return 0;
+@@ -934,7 +980,7 @@ static int ipv4_create_routes ( void ) {
+ 
+ /** IPv4 settings applicator */
+ struct settings_applicator ipv4_settings_applicator __settings_applicator = {
+-	.apply = ipv4_create_routes,
++	.apply = ipv4_apply_routes,
+ };
+ 
+ /* Drag in objects via ipv4_protocol */
+diff --git a/src/tests/ipv4_test.c b/src/tests/ipv4_test.c
+deleted file mode 100644
+index f84a8b81..00000000
+--- a/src/tests/ipv4_test.c
++++ /dev/null
+@@ -1,154 +0,0 @@
+-/*
+- * Copyright (C) 2015 Michael Brown <mbrown@fensystems.co.uk>.
+- *
+- * This program is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU General Public License as
+- * published by the Free Software Foundation; either version 2 of the
+- * License, or (at your option) any later version.
+- *
+- * This program is distributed in the hope that it will be useful, but
+- * WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+- * General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public License
+- * along with this program; if not, write to the Free Software
+- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
+- * 02110-1301, USA.
+- *
+- * You can also choose to distribute this program under the terms of
+- * the Unmodified Binary Distribution Licence (as given in the file
+- * COPYING.UBDL), provided that you have satisfied its requirements.
+- */
+-
+-FILE_LICENCE ( GPL2_OR_LATER_OR_UBDL );
+-
+-/** @file
+- *
+- * IPv4 tests
+- *
+- */
+-
+-/* Forcibly enable assertions */
+-#undef NDEBUG
+-
+-#include <stdint.h>
+-#include <string.h>
+-#include <byteswap.h>
+-#include <ipxe/in.h>
+-#include <ipxe/test.h>
+-
+-/** Define inline IPv4 address */
+-#define IPV4(a,b,c,d) \
+-	htonl ( ( (a) << 24 ) | ( (b) << 16 ) | ( (c) << 8 ) | (d) )
+-
+-/**
+- * Report an inet_ntoa() test result
+- *
+- * @v addr		IPv4 address
+- * @v text		Expected textual representation
+- * @v file		Test code file
+- * @v line		Test code line
+- */
+-static void inet_ntoa_okx ( uint32_t addr, const char *text, const char *file,
+-			    unsigned int line ) {
+-	struct in_addr in = { .s_addr = addr };
+-	char *actual;
+-
+-	/* Format address */
+-	actual = inet_ntoa ( in );
+-	DBG ( "inet_ntoa ( %d.%d.%d.%d ) = %s\n",
+-	      ( ( ntohl ( addr ) >> 24 ) & 0xff ),
+-	      ( ( ntohl ( addr ) >> 16 ) & 0xff ),
+-	      ( ( ntohl ( addr ) >> 8 ) & 0xff ),
+-	      ( ( ntohl ( addr ) >> 0 ) & 0xff ), actual );
+-	okx ( strcmp ( actual, text ) == 0, file, line );
+-}
+-#define inet_ntoa_ok( addr, text ) \
+-	inet_ntoa_okx ( addr, text, __FILE__, __LINE__ )
+-
+-/**
+- * Report an inet_aton() test result
+- *
+- * @v text		Textual representation
+- * @v addr		Expected IPv4 address
+- * @v file		Test code file
+- * @v line		Test code line
+- */
+-static void inet_aton_okx ( const char *text, uint32_t addr, const char *file,
+-			    unsigned int line ) {
+-	struct in_addr actual;
+-
+-	/* Parse address */
+-	okx ( inet_aton ( text, &actual ) != 0, file, line );
+-	DBG ( "inet_aton ( \"%s\" ) = %s\n", text, inet_ntoa ( actual ) );
+-	okx ( actual.s_addr == addr, file, line );
+-};
+-#define inet_aton_ok( text, addr ) \
+-	inet_aton_okx ( text, addr, __FILE__, __LINE__ )
+-
+-/**
+- * Report an inet_aton() failure test result
+- *
+- * @v text		Textual representation
+- * @v file		Test code file
+- * @v line		Test code line
+- */
+-static void inet_aton_fail_okx ( const char *text, const char *file,
+-				 unsigned int line ) {
+-	struct in_addr actual;
+-
+-	/* Attempt to parse address */
+-	okx ( inet_aton ( text, &actual ) == 0, file, line );
+-}
+-#define inet_aton_fail_ok( text ) \
+-	inet_aton_fail_okx ( text, __FILE__, __LINE__ )
+-
+-/**
+- * Perform IPv4 self-tests
+- *
+- */
+-static void ipv4_test_exec ( void ) {
+-
+-	/* Address testing macros */
+-	ok (   IN_IS_CLASSA ( IPV4 ( 10, 0, 0, 1 ) ) );
+-	ok ( ! IN_IS_CLASSB ( IPV4 ( 10, 0, 0, 1 ) ) );
+-	ok ( ! IN_IS_CLASSC ( IPV4 ( 10, 0, 0, 1 ) ) );
+-	ok ( ! IN_IS_CLASSA ( IPV4 ( 172, 16, 0, 1 ) ) );
+-	ok (   IN_IS_CLASSB ( IPV4 ( 172, 16, 0, 1 ) ) );
+-	ok ( ! IN_IS_CLASSC ( IPV4 ( 172, 16, 0, 1 ) ) );
+-	ok ( ! IN_IS_CLASSA ( IPV4 ( 192, 168, 0, 1 ) ) );
+-	ok ( ! IN_IS_CLASSB ( IPV4 ( 192, 168, 0, 1 ) ) );
+-	ok (   IN_IS_CLASSC ( IPV4 ( 192, 168, 0, 1 ) ) );
+-	ok ( ! IN_IS_MULTICAST ( IPV4 ( 127, 0, 0, 1 ) ) );
+-	ok ( ! IN_IS_MULTICAST ( IPV4 ( 8, 8, 8, 8 ) ) );
+-	ok ( ! IN_IS_MULTICAST ( IPV4 ( 0, 0, 0, 0 ) ) );
+-	ok ( ! IN_IS_MULTICAST ( IPV4 ( 223, 0, 0, 1 ) ) );
+-	ok ( ! IN_IS_MULTICAST ( IPV4 ( 240, 0, 0, 1 ) ) );
+-	ok (   IN_IS_MULTICAST ( IPV4 ( 224, 0, 0, 1 ) ) );
+-	ok (   IN_IS_MULTICAST ( IPV4 ( 231, 89, 0, 2 ) ) );
+-	ok (   IN_IS_MULTICAST ( IPV4 ( 239, 6, 1, 17 ) ) );
+-
+-	/* inet_ntoa() tests */
+-	inet_ntoa_ok ( IPV4 ( 127, 0, 0, 1 ), "127.0.0.1" );
+-	inet_ntoa_ok ( IPV4 ( 0, 0, 0, 0 ), "0.0.0.0" );
+-	inet_ntoa_ok ( IPV4 ( 255, 255, 255, 255 ), "255.255.255.255" );
+-	inet_ntoa_ok ( IPV4 ( 212, 13, 204, 60 ), "212.13.204.60" );
+-
+-	/* inet_aton() tests */
+-	inet_aton_ok ( "212.13.204.60", IPV4 ( 212, 13, 204, 60 ) );
+-	inet_aton_ok ( "127.0.0.1", IPV4 ( 127, 0, 0, 1 ) );
+-
+-	/* inet_aton() failure tests */
+-	inet_aton_fail_ok ( "256.0.0.1" ); /* Byte out of range */
+-	inet_aton_fail_ok ( "212.13.204.60.1" ); /* Too long */
+-	inet_aton_fail_ok ( "127.0.0" ); /* Too short */
+-	inet_aton_fail_ok ( "1.2.3.a" ); /* Invalid characters */
+-	inet_aton_fail_ok ( "127.0..1" ); /* Missing bytes */
+-}
+-
+-/** IPv4 self-test */
+-struct self_test ipv4_test __self_test = {
+-	.name = "ipv4",
+-	.exec = ipv4_test_exec,
+-};
+diff --git a/src/usr/route_ipv4.c b/src/usr/route_ipv4.c
+index 6260335a..f79c0ad8 100644
+--- a/src/usr/route_ipv4.c
++++ b/src/usr/route_ipv4.c
+@@ -41,16 +41,51 @@ FILE_LICENCE ( GPL2_OR_LATER_OR_UBDL );
+  */
+ static void route_ipv4_print ( struct net_device *netdev ) {
+ 	struct ipv4_miniroute *miniroute;
++	struct ipv4_miniroute *defroute;
++	struct in_addr address;
++	struct in_addr network;
++	struct in_addr netmask;
++	struct in_addr gateway;
++	int remote;
+ 
++	/* Print routing table */
+ 	list_for_each_entry ( miniroute, &ipv4_miniroutes, list ) {
++
++		/* Skip non-matching network devices */
+ 		if ( miniroute->netdev != netdev )
+ 			continue;
+-		printf ( "%s: %s/", netdev->name,
+-			 inet_ntoa ( miniroute->address ) );
+-		printf ( "%s", inet_ntoa ( miniroute->netmask ) );
+-		if ( miniroute->gateway.s_addr )
+-			printf ( " gw %s", inet_ntoa ( miniroute->gateway ) );
+-		if ( ! netdev_is_open ( miniroute->netdev ) )
++		address = miniroute->address;
++		network = miniroute->network;
++		netmask = miniroute->netmask;
++		gateway = miniroute->gateway;
++		assert ( ( network.s_addr & ~netmask.s_addr ) == 0 );
++
++		/* Defer default routes to be printed with local addresses */
++		if ( ! netmask.s_addr )
++			continue;
++
++		/* Print local address and destination subnet */
++	        remote = ( ( address.s_addr ^ network.s_addr ) &
++			   netmask.s_addr );
++		printf ( "%s: %s", netdev->name, inet_ntoa ( address ) );
++		if ( remote )
++			printf ( " for %s", inet_ntoa ( network ) );
++		printf ( "/%s", inet_ntoa ( netmask ) );
++		if ( gateway.s_addr )
++			printf ( " gw %s", inet_ntoa ( gateway ) );
++
++		/* Print default routes with local subnets */
++		list_for_each_entry ( defroute, &ipv4_miniroutes, list ) {
++			if ( ( defroute->netdev == netdev ) &&
++			     ( defroute->address.s_addr = address.s_addr ) &&
++			     ( ! defroute->netmask.s_addr ) && ( ! remote ) ) {
++				printf ( " gw %s",
++					 inet_ntoa ( defroute->gateway ) );
++			}
++		}
++
++		/* Print trailer */
++		if ( ! netdev_is_open ( netdev ) )
+ 			printf ( " (inaccessible)" );
+ 		printf ( "\n" );
+ 	}
+-- 
+2.49.0
+
+From 6f1f0141753f02bfc815393c6b7387f508628a6b Mon Sep 17 00:00:00 2001
+From: Michael Brown <mcb30@ipxe.org>
+Date: Tue, 10 Jun 2025 16:55:18 +0100
+Subject: [PATCH 4/4] [ipv4] Add support for classless static routes
+
+Add support for RFC 3442 classless static routes provided via DHCP
+option 121.
+
+Originally-implemented-by: Hazel Smith <hazel.smith@leicester.ac.uk>
+Originally-implemented-by: Raphael Pour <raphael.pour@hetzner.com>
+Signed-off-by: Michael Brown <mcb30@ipxe.org>
+(cherry picked from commit b5fb7353fa3856cee7e0a6760c2341ca617d6ef4)
+---
+ src/include/ipxe/dhcp.h     |   3 +
+ src/include/ipxe/settings.h |   2 +
+ src/net/ipv4.c              | 165 ++++++++++++++++++++++++++----------
+ src/net/udp/dhcp.c          |   1 +
+ 4 files changed, 128 insertions(+), 43 deletions(-)
 
 diff --git a/src/include/ipxe/dhcp.h b/src/include/ipxe/dhcp.h
-index b7a5f004..8fb3947c 100644
+index b7a5f004..2fb9a1f8 100644
 --- a/src/include/ipxe/dhcp.h
 +++ b/src/include/ipxe/dhcp.h
-@@ -323,6 +323,12 @@ struct dhcp_client_uuid {
+@@ -323,6 +323,9 @@ struct dhcp_client_uuid {
  /** DNS domain search list */
  #define DHCP_DOMAIN_SEARCH 119
  
-+/** DHCP 121 - Classless Static Route Option  */
-+#define DHCP_CLASSLESS_STATIC_ROUTE 121
-+
-+/** DHCP 121 - Classless Static Route Option for Microsoft DHCP-server  */
-+#define DHCP_CLASSLESS_STATIC_ROUTE_MS 249
++/** Classless static routes */
++#define DHCP_STATIC_ROUTES 121
 +
  /** Etherboot-specific encapsulated options
   *
   * This encapsulated options field is used to contain all options
-diff --git a/src/include/ipxe/dhcpopts.h b/src/include/ipxe/dhcpopts.h
-index 707fda4a..604d479c 100644
---- a/src/include/ipxe/dhcpopts.h
-+++ b/src/include/ipxe/dhcpopts.h
-@@ -39,5 +39,8 @@ extern void dhcpopt_init ( struct dhcp_options *options,
- 					       size_t len ) );
- extern void dhcpopt_update_used_len ( struct dhcp_options *options );
- extern int dhcpopt_no_realloc ( struct dhcp_options *options, size_t len );
--
-+extern int find_dhcp_option_with_encap ( struct dhcp_options *options,
-+                        unsigned int tag, int *encap_offset );
-+extern struct dhcp_option * dhcp_option ( struct dhcp_options *options,
-+                        unsigned int offset );
- #endif /* _IPXE_DHCPOPTS_H */
-diff --git a/src/include/ipxe/ip.h b/src/include/ipxe/ip.h
-index 285be6dc..ba869068 100644
---- a/src/include/ipxe/ip.h
-+++ b/src/include/ipxe/ip.h
-@@ -70,6 +70,13 @@ struct ipv4_miniroute {
- 	struct in_addr gateway;
- };
- 
-+/** An IPv4 address octets/int union */
-+union ipv4_conversion {
-+
-+	uint32_t address;
-+	uint8_t octets[4];
-+};
-+
- extern struct list_head ipv4_miniroutes;
- 
- extern struct net_protocol ipv4_protocol __net_protocol;
-diff --git a/src/include/ipxe/netdevice.h b/src/include/ipxe/netdevice.h
-index 294f7b36..3ed27264 100644
---- a/src/include/ipxe/netdevice.h
-+++ b/src/include/ipxe/netdevice.h
-@@ -430,6 +430,12 @@ struct net_device {
- 	/** Driver private data */
- 	void *priv;
- 
-+	/** Static routes from DHCP option 121 */
-+	uint8_t * static_routes;
-+
-+	/** DHCP option 121 length */
-+	uint8_t static_routes_len;
-+
- 	/** Network device configurations (variable length) */
- 	struct net_device_configuration configs[0];
- };
-diff --git a/src/net/dhcpopts.c b/src/net/dhcpopts.c
-index cdb632b4..6aa2efca 100644
---- a/src/net/dhcpopts.c
-+++ b/src/net/dhcpopts.c
-@@ -64,8 +64,8 @@ static inline char * dhcp_tag_name ( unsigned int tag ) {
-  * @v offset		Offset within options block
-  * @ret option		DHCP option
-  */
--static inline __attribute__ (( always_inline )) struct dhcp_option *
--dhcp_option ( struct dhcp_options *options, unsigned int offset ) {
-+struct dhcp_option * dhcp_option ( struct dhcp_options *options,
-+                      unsigned int offset ) {
- 	return ( ( struct dhcp_option * ) ( options->data + offset ) );
- }
- 
-@@ -116,7 +116,7 @@ static unsigned int dhcp_option_len ( struct dhcp_option *option ) {
-  * such as options missing a @c DHCP_END terminator, or options whose
-  * length would take them beyond the end of the data block.
-  */
--static int find_dhcp_option_with_encap ( struct dhcp_options *options,
-+int find_dhcp_option_with_encap ( struct dhcp_options *options,
- 					 unsigned int tag,
- 					 int *encap_offset ) {
- 	unsigned int original_tag __attribute__ (( unused )) = tag;
+diff --git a/src/include/ipxe/settings.h b/src/include/ipxe/settings.h
+index e042b975..761b74fc 100644
+--- a/src/include/ipxe/settings.h
++++ b/src/include/ipxe/settings.h
+@@ -437,6 +437,8 @@ netmask_setting __setting ( SETTING_IP4, netmask );
+ extern const struct setting
+ gateway_setting __setting ( SETTING_IP4, gateway );
+ extern const struct setting
++static_route_setting __setting ( SETTING_IP4, static_routes );
++extern const struct setting
+ dns_setting __setting ( SETTING_IP4_EXTRA, dns );
+ extern const struct setting
+ ip6_setting __setting ( SETTING_IP6, ip6 );
 diff --git a/src/net/ipv4.c b/src/net/ipv4.c
-index b9ce5e7f..ddd9d050 100644
+index 5693fa0d..ead24196 100644
 --- a/src/net/ipv4.c
 +++ b/src/net/ipv4.c
-@@ -337,9 +337,12 @@ static int ipv4_tx ( struct io_buffer *iobuf,
- 	if ( ( next_hop.s_addr != INADDR_BROADCAST ) &&
- 	     ( ( miniroute = ipv4_route ( sin_dest->sin_scope_id,
- 					  &next_hop ) ) != NULL ) ) {
--		iphdr->src = miniroute->address;
- 		netmask = miniroute->netmask;
- 		netdev = miniroute->netdev;
-+
-+        struct settings *settings = netdev_settings ( netdev );
-+        fetch_ipv4_setting ( settings, &ip_setting, &iphdr->src );
-+        next_hop = miniroute->gateway;
- 	}
- 	if ( ! netdev ) {
- 		DBGC ( sin_dest->sin_addr, "IPv4 has no route to %s\n",
-@@ -448,16 +451,15 @@ int ipv4_has_any_addr ( struct net_device *netdev ) {
-  * @ret has_addr	Network device has this IPv4 address
-  */
- static int ipv4_has_addr ( struct net_device *netdev, struct in_addr addr ) {
--	struct ipv4_miniroute *miniroute;
- 
--	list_for_each_entry ( miniroute, &ipv4_miniroutes, list ) {
--		if ( ( miniroute->netdev == netdev ) &&
--		     ( miniroute->address.s_addr == addr.s_addr ) ) {
--			/* Found matching address */
--			return 1;
--		}
--	}
--	return 0;
-+    struct in_addr address;
-+    struct settings *settings = netdev_settings ( netdev );
-+    fetch_ipv4_setting ( settings, &ip_setting, &address );
-+
-+    if ( address.s_addr == addr.s_addr )
-+         return 1;
-+
-+    return 0;
- }
- 
- /**
-@@ -844,6 +846,26 @@ static int ipv4_gratuitous_arp ( struct net_device *netdev,
+@@ -134,36 +134,132 @@ static int ipv4_add_miniroute ( struct net_device *netdev,
  	return 0;
  }
  
 +/**
-+ * Convert netmask from prefix length to IPv4
++ * Add static route minirouting table entries
 + *
-+ * @v prefix_len   Prefix length
-+ * @ret rc	  Return IPv4 netmask
++ * @v netdev		Network device
++ * @v address		IPv4 address
++ * @v routes		Static routes
++ * @v len		Length of static routes
++ * @ret rc		Return status code
 + */
-+static inline uint32_t prefix_len_to_mask ( uint8_t prefix_len ) {
++static int ipv4_add_static ( struct net_device *netdev, struct in_addr address,
++			     const void *routes, size_t len ) {
++	const struct {
++		struct in_addr address;
++	} __attribute__ (( packed )) *encoded;
++	struct in_addr netmask;
++	struct in_addr network;
++	struct in_addr gateway;
++	unsigned int width;
++	unsigned int masklen;
++	size_t remaining;
++	const void *data;
++	int rc;
 +
-+	/* Check if prefix_len is in the right range. While the prefix_len is unsigned,
-+	   we don't have to check for negative numbers */
-+	if(prefix_len > 32)
-+	{
-+		DBGC( prefix_len, "Invalid prefix_len /%u. Must fullfill 0<=prefix_len<=32\n",
-+			  prefix_len );
-+		return 0;
++	/* Parse and add static routes */
++	for ( data = routes, remaining = len ; remaining ; ) {
++
++		/* Extract subnet mask width */
++		width = *( ( uint8_t * ) data );
++		data++;
++		remaining--;
++		masklen = ( ( width + 7 ) / 8 );
++
++		/* Check remaining length */
++		if ( ( masklen + sizeof ( gateway ) ) > remaining ) {
++			DBGC ( netdev, "IPv4 invalid static route:\n" );
++			DBGC_HDA ( netdev, 0, routes, len );
++			return -EINVAL;
++		}
++
++		/* Calculate subnet mask */
++		if ( width ) {
++			netmask.s_addr = htonl ( -1UL << ( 32 - width ) );
++		} else {
++			netmask.s_addr = 0;
++		}
++
++		/* Extract network address */
++		encoded = data;
++		network.s_addr = ( encoded->address.s_addr & netmask.s_addr );
++		data += masklen;
++		remaining -= masklen;
++
++		/* Extract gateway address */
++		encoded = data;
++		gateway.s_addr = encoded->address.s_addr;
++		data += sizeof ( gateway );
++		remaining -= sizeof ( gateway );
++
++		/* Add route */
++		if ( ( rc = ipv4_add_miniroute ( netdev, address, network,
++						 netmask, gateway ) ) != 0 )
++			return rc;
 +	}
 +
-+	return htonl ( ( prefix_len > 0 ) ? 0xFFFFFFFF << ( 32 - prefix_len ) : 0 );
++	return 0;
 +}
 +
  /**
-  * Process IPv4 network device settings
+  * Add IPv4 minirouting table entries
   *
-@@ -890,9 +912,52 @@ static int ipv4_settings ( int ( * apply ) ( struct net_device *netdev,
- 		/* Get default gateway, if present */
- 		fetch_ipv4_setting ( settings, &gateway_setting, &gateway );
+  * @v netdev		Network device
+  * @v address		IPv4 address
+- * @v netmask		Subnet mask
+- * @v gateway		Gateway address (if any)
+  * @ret rc		Return status code
+  */
+ static int ipv4_add_miniroutes ( struct net_device *netdev,
+-				 struct in_addr address,
+-				 struct in_addr netmask,
+-				 struct in_addr gateway ) {
++				 struct in_addr address ) {
++	struct settings *settings = netdev_settings ( netdev );
+ 	struct in_addr none = { 0 };
++	struct in_addr netmask;
++	struct in_addr gateway;
+ 	struct in_addr network;
++	void *routes;
++	int len;
+ 	int rc;
  
--		/* Apply settings */
--		if ( ( rc = apply ( netdev, address, netmask, gateway ) ) != 0 )
--			return rc;
-+		/* Configure route (-s) */
-+		uint8_t * raw_data = netdev->static_routes;
-+		uint8_t option_len = netdev->static_routes_len;
++	/* Get subnet mask */
++	fetch_ipv4_setting ( settings, &netmask_setting, &netmask );
 +
-+
-+		/* Check if static routes available
-+		 * The minimum length for DHCP option 121 is 5 bytes */
-+		if ( option_len >= 5 ) {
-+			uint8_t i = 0;
-+			uint8_t j;
-+			uint8_t addr_octets_len;
-+			uint8_t prefix_len;
-+
-+			union ipv4_conversion address_conversion = {0};
-+			union ipv4_conversion gateway_conversion = {0};
-+
-+			/* Extract routes and add them to routing table */
-+			while ( i < option_len ) {
-+				prefix_len = raw_data[i];
-+				i++;
-+
-+				/* Netmask */
-+				addr_octets_len = prefix_len / 8;
-+				netmask.s_addr = prefix_len_to_mask ( prefix_len );
-+
-+				/* Address */
-+				for ( j = 0; j < addr_octets_len; j++ )
-+					address_conversion.octets[j] = raw_data[i + j];
-+
-+				address.s_addr = address_conversion.address;
-+
-+				/* Gateway */
-+				i += j;
-+				for ( j = 0; j < 4; j++ )
-+					gateway_conversion.octets[j] = raw_data[i + j];
-+
-+				gateway.s_addr = gateway_conversion.address;
-+				i += j;
-+
-+				if ( ( rc = apply ( netdev, address, netmask, gateway ) ) != 0 )
-+					return rc;
-+			}
-+		} else {
-+			if ( ( rc = apply ( netdev, address, netmask, gateway ) ) != 0 )
-+				return rc;
++	/* Calculate default netmask, if necessary */
++	if ( ! netmask.s_addr ) {
++		if ( IN_IS_CLASSA ( address.s_addr ) ) {
++			netmask.s_addr = INADDR_NET_CLASSA;
++		} else if ( IN_IS_CLASSB ( address.s_addr ) ) {
++			netmask.s_addr = INADDR_NET_CLASSB;
++		} else if ( IN_IS_CLASSC ( address.s_addr ) ) {
++			netmask.s_addr = INADDR_NET_CLASSC;
 +		}
++	}
++
++	/* Get default gateway, if present */
++	fetch_ipv4_setting ( settings, &gateway_setting, &gateway );
++
++	/* Get static routes, if present */
++	len = fetch_raw_setting_copy ( settings, &static_route_setting,
++				       &routes );
++
+ 	/* Add local address */
+ 	network.s_addr = ( address.s_addr & netmask.s_addr );
+ 	if ( ( rc = ipv4_add_miniroute ( netdev, address, network, netmask,
+ 					 none ) ) != 0 )
+-		return rc;
+-
+-	/* Add default gateway, if applicable */
+-	if ( gateway.s_addr &&
+-	     ( ( rc = ipv4_add_miniroute ( netdev, address, none, none,
+-					   gateway ) ) != 0 ) )
+-		return rc;
++		goto done;
++
++	/* Add static routes or default gateway, as applicable */
++	if ( len >= 0 ) {
++		if ( ( rc = ipv4_add_static ( netdev, address, routes,
++					      len ) ) != 0 )
++			goto done;
++	} else if ( gateway.s_addr ) {
++		if ( ( rc = ipv4_add_miniroute ( netdev, address, none, none,
++						 gateway ) ) != 0 )
++			goto done;
++	}
+ 
+-	return 0;
++ done:
++	free ( routes );
++	return rc;
+ }
+ 
+ /**
+@@ -871,19 +967,24 @@ const struct setting gateway_setting __setting ( SETTING_IP4, gateway ) = {
+ 	.type = &setting_type_ipv4,
+ };
+ 
++/** Classless static routes setting */
++const struct setting static_route_setting __setting ( SETTING_IP4,
++						      static_routes ) = {
++	.name = "static-routes",
++	.description = "Static routes",
++	.tag = DHCP_STATIC_ROUTES,
++	.type = &setting_type_hex,
++};
++
+ /**
+  * Send gratuitous ARP, if applicable
+  *
+  * @v netdev		Network device
+  * @v address		IPv4 address
+- * @v netmask		Subnet mask
+- * @v gateway		Gateway address (if any)
+  * @ret rc		Return status code
+  */
+ static int ipv4_gratuitous_arp ( struct net_device *netdev,
+-				 struct in_addr address,
+-				 struct in_addr netmask __unused,
+-				 struct in_addr gateway __unused ) {
++				 struct in_addr address ) {
+ 	int rc;
+ 
+ 	/* Do nothing if network device already has this IPv4 address */
+@@ -910,14 +1011,10 @@ static int ipv4_gratuitous_arp ( struct net_device *netdev,
+  * @ret rc		Return status code
+  */
+ static int ipv4_settings ( int ( * apply ) ( struct net_device *netdev,
+-					     struct in_addr address,
+-					     struct in_addr netmask,
+-					     struct in_addr gateway ) ) {
++					     struct in_addr address ) ) {
+ 	struct net_device *netdev;
+ 	struct settings *settings;
+-	struct in_addr address = { 0 };
+-	struct in_addr netmask = { 0 };
+-	struct in_addr gateway = { 0 };
++	struct in_addr address;
+ 	int rc;
+ 
+ 	/* Process settings for each network device */
+@@ -927,30 +1024,12 @@ static int ipv4_settings ( int ( * apply ) ( struct net_device *netdev,
+ 		settings = netdev_settings ( netdev );
+ 
+ 		/* Get IPv4 address */
+-		address.s_addr = 0;
+ 		fetch_ipv4_setting ( settings, &ip_setting, &address );
+ 		if ( ! address.s_addr )
+ 			continue;
+ 
+-		/* Get subnet mask */
+-		fetch_ipv4_setting ( settings, &netmask_setting, &netmask );
+-
+-		/* Calculate default netmask, if necessary */
+-		if ( ! netmask.s_addr ) {
+-			if ( IN_IS_CLASSA ( address.s_addr ) ) {
+-				netmask.s_addr = INADDR_NET_CLASSA;
+-			} else if ( IN_IS_CLASSB ( address.s_addr ) ) {
+-				netmask.s_addr = INADDR_NET_CLASSB;
+-			} else if ( IN_IS_CLASSC ( address.s_addr ) ) {
+-				netmask.s_addr = INADDR_NET_CLASSC;
+-			}
+-		}
+-
+-		/* Get default gateway, if present */
+-		fetch_ipv4_setting ( settings, &gateway_setting, &gateway );
+-
+ 		/* Apply settings */
+-		if ( ( rc = apply ( netdev, address, netmask, gateway ) ) != 0 )
++		if ( ( rc = apply ( netdev, address ) ) != 0 )
+ 			return rc;
  	}
  
- 	return 0;
 diff --git a/src/net/udp/dhcp.c b/src/net/udp/dhcp.c
-index a335a778..eb18184f 100644
+index a335a778..582ab64f 100644
 --- a/src/net/udp/dhcp.c
 +++ b/src/net/udp/dhcp.c
 @@ -94,6 +94,7 @@ static uint8_t dhcp_request_options_data[] = {
  		      DHCP_ROOT_PATH, DHCP_MTU, DHCP_VENDOR_ENCAP,
  		      DHCP_VENDOR_CLASS_ID, DHCP_TFTP_SERVER_NAME,
  		      DHCP_BOOTFILE_NAME, DHCP_DOMAIN_SEARCH,
-+		      DHCP_CLASSLESS_STATIC_ROUTE, DHCP_CLASSLESS_STATIC_ROUTE_MS,
++          DHCP_STATIC_ROUTES,
  		      128, 129, 130, 131, 132, 133, 134, 135, /* for PXE */
  		      DHCP_EB_ENCAP, DHCP_ISCSI_INITIATOR_IQN ),
  	DHCP_END
-@@ -588,6 +589,27 @@ static void dhcp_request_rx ( struct dhcp_session *dhcp,
- 	/* Record assigned address */
- 	dhcp->local.sin_addr = ip;
- 
-+
-+    /* Looking for DHCP option 121 */
-+    int offset_opt121 = 0;
-+    if ( ( offset_opt121 = find_dhcp_option_with_encap( &dhcppkt->options,
-+            DHCP_CLASSLESS_STATIC_ROUTE, NULL ) ) < 0 ) {
-+        /* Option 121 not found. Looking for Microsoft's option 249 */
-+        if ( ( offset_opt121 =
-+                find_dhcp_option_with_encap( &dhcppkt->options,
-+                        DHCP_CLASSLESS_STATIC_ROUTE_MS, NULL ) ) < 0 ) {
-+            /* Neither option 121 found nor 249 */
-+            dhcp->netdev->static_routes_len = 0;
-+        }
-+    }
-+    if ( offset_opt121 > 0 ) {
-+        struct dhcp_option *d_option =
-+                dhcp_option ( &dhcppkt->options, offset_opt121 );
-+        DBGC ( dhcp, "DHCP option 121 length: %d\n", d_option->len );
-+        dhcp->netdev->static_routes_len = d_option->len;
-+        dhcp->netdev->static_routes = ( ( uint8_t * ) d_option->data );
-+    }
-+
- 	/* Register settings */
- 	parent = netdev_settings ( dhcp->netdev );
- 	settings = &dhcppkt->settings;
 -- 
-2.38.1
+2.49.0
 
