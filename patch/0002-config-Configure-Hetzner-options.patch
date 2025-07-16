@@ -1,0 +1,107 @@
+From 172a6fc28a2dd6fdd67fb3ea2622c6be938a8366 Mon Sep 17 00:00:00 2001
+From: Tan Siewert <tan.siewert@hetzner.com>
+Date: Wed, 16 Jul 2025 12:35:56 +0200
+Subject: [PATCH] Configure Hetzner options and disable OCSP
+
+OCSP does not work properly when a restrictive "Hetzner firewall" is
+active.
+
+Signed-off-by: Tan Siewert <tan.siewert@hetzner.com>
+---
+ src/config/branding.h      |  2 +-
+ src/config/crypto.h        |  2 +-
+ src/config/local/colour.h  | 28 ++++++++++++++++++++++++++++
+ src/config/local/general.h | 20 ++++++++++++++++++++
+ 4 files changed, 50 insertions(+), 2 deletions(-)
+ create mode 100644 src/config/local/colour.h
+ create mode 100644 src/config/local/general.h
+
+diff --git a/src/config/branding.h b/src/config/branding.h
+index 454bf0c03..927ad71ca 100644
+--- a/src/config/branding.h
++++ b/src/config/branding.h
+@@ -24,7 +24,7 @@ FILE_LICENCE ( GPL2_OR_LATER_OR_UBDL );
+  * "iPXE".
+  *
+  */
+-#define PRODUCT_NAME ""
++#define PRODUCT_NAME "Hetzner Online PXE"
+ #define PRODUCT_SHORT_NAME "iPXE"
+ #define PRODUCT_URI "https://ipxe.org"
+ 
+diff --git a/src/config/crypto.h b/src/config/crypto.h
+index f2ee9fd0d..3357bb0a5 100644
+--- a/src/config/crypto.h
++++ b/src/config/crypto.h
+@@ -88,7 +88,7 @@ FILE_LICENCE ( GPL2_OR_LATER_OR_UBDL );
+  * forced to operate on networks without access to the OCSP servers.
+  * Allow the user to explicitly disable the use of OCSP checks.
+  */
+-#define OCSP_CHECK
++#undef OCSP_CHECK
+ 
+ #include <config/named.h>
+ #include NAMED_CONFIG(crypto.h)
+diff --git a/src/config/local/colour.h b/src/config/local/colour.h
+new file mode 100644
+index 000000000..4ad51617d
+--- /dev/null
++++ b/src/config/local/colour.h
+@@ -0,0 +1,28 @@
++#undef COLOR_NORMAL_FG
++#undef COLOR_NORMAL_BG
++#undef COLOR_SELECT_FG
++#undef COLOR_SELECT_BG
++#undef COLOR_SEPARATOR_FG
++#undef COLOR_SEPARATOR_BG
++#undef COLOR_EDIT_FG
++#undef COLOR_EDIT_BG
++#undef COLOR_ALERT_FG
++#undef COLOR_ALERT_BG
++#undef COLOR_URL_FG
++#undef COLOR_URL_BG
++#undef COLOR_PXE_FG
++#undef COLOR_PXE_BG
++#define COLOR_NORMAL_FG		COLOR_RED
++#define COLOR_NORMAL_BG		COLOR_BLACK
++#define COLOR_SELECT_FG		COLOR_WHITE
++#define COLOR_SELECT_BG		COLOR_BLUE
++#define COLOR_SEPARATOR_FG	COLOR_WHITE
++#define COLOR_SEPARATOR_BG	COLOR_BLACK
++#define COLOR_EDIT_FG		COLOR_BLACK
++#define COLOR_EDIT_BG		COLOR_RED
++#define COLOR_ALERT_FG		COLOR_WHITE
++#define COLOR_ALERT_BG		COLOR_RED
++#define COLOR_URL_FG		COLOR_RED
++#define COLOR_URL_BG		COLOR_BLACK
++#define COLOR_PXE_FG		COLOR_BLACK
++#define COLOR_PXE_BG		COLOR_WHITE
+diff --git a/src/config/local/general.h b/src/config/local/general.h
+new file mode 100644
+index 000000000..d05c0b52c
+--- /dev/null
++++ b/src/config/local/general.h
+@@ -0,0 +1,20 @@
++#undef IMAGE_ARCHIVE_CMD
++
++#define CONSOLE_FRAMEBUFFER
++
++#define NET_PROTO_IPV6
++
++#define DOWNLOAD_PROTO_HTTPS
++#define SANBOOT_PROTO_HTTP
++
++#define IMAGE_SCRIPT
++
++#define NSLOOKUP_CMD
++#define VLAN_CMD
++#define REBOOT_CMD
++#define POWEROFF_CMD
++#define NEIGHBOUR_CMD
++#define PING_CMD
++#define CONSOLE_CMD
++#define NTP_CMD
++
+-- 
+2.49.0
+

@@ -1,4 +1,4 @@
-From 754e43ee262b0c9d071c682bd182826917f6efc7 Mon Sep 17 00:00:00 2001
+From cb5e513842982809634a429df57cb0e8be3269dc Mon Sep 17 00:00:00 2001
 From: Tan Siewert <tan.siewert@hetzner.com>
 Date: Mon, 6 Jan 2025 15:52:47 +0100
 Subject: [PATCH] pcbios: add biosboot command
@@ -11,17 +11,17 @@ This command is also required if you still need an INT18 call for
 
 Signed-off-by: Tan Siewert <tan.siewert@hetzner.com>
 ---
- src/arch/x86/hci/commands/biosboot_cmd.c | 53 ++++++++++++++++++++++++
+ src/arch/x86/hci/commands/biosboot_cmd.c | 51 ++++++++++++++++++++++++
  src/config/config.c                      |  5 +++
- 2 files changed, 58 insertions(+)
+ 2 files changed, 56 insertions(+)
  create mode 100644 src/arch/x86/hci/commands/biosboot_cmd.c
 
 diff --git a/src/arch/x86/hci/commands/biosboot_cmd.c b/src/arch/x86/hci/commands/biosboot_cmd.c
 new file mode 100644
-index 00000000..ba60ecee
+index 000000000..9ed1c4b83
 --- /dev/null
 +++ b/src/arch/x86/hci/commands/biosboot_cmd.c
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,51 @@
 +/*
 + * Hacky INT18 BIOS boot command because the 0x80 approach
 + * is not working on some hardware.
@@ -71,13 +71,10 @@ index 00000000..ba60ecee
 +  return 0;
 +}
 +
-+struct command biosboot_command __command = {
-+    .name = "biosboot",
-+    .exec = biosboot_exec,
-+};
-\ No newline at end of file
++
++COMMAND ( biosboot, biosboot_exec );
 diff --git a/src/config/config.c b/src/config/config.c
-index a8186613..8805b18c 100644
+index e49f236a3..b5de87829 100644
 --- a/src/config/config.c
 +++ b/src/config/config.c
 @@ -51,6 +51,11 @@ PROVIDE_REQUIRING_SYMBOL();
@@ -93,5 +90,5 @@ index a8186613..8805b18c 100644
  REQUIRE_OBJECT ( serial );
  #endif
 -- 
-2.47.0
+2.50.1
 
