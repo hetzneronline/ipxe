@@ -21,3 +21,5 @@
 0017-pic8259-Return-previous-state-when-enabling-or-disab.patch
 0018-rng-Restore-state-of-IRQ-8-and-PIE-when-disabling-en.patch
 0019-work-around-broken-asustek-knpa-u16-server-pxe-rom.patch
+
+0001-undi-Assume-that-legacy-interrupts-are-broken-for-an.patch

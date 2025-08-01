@@ -1,0 +1,102 @@
+From e3a6e9230c4e513e6a529427d71a714849b6f788 Mon Sep 17 00:00:00 2001
+From: Michael Brown <mcb30@ipxe.org>
+Date: Thu, 24 Jul 2025 13:59:42 +0100
+Subject: [PATCH] [undi] Assume that legacy interrupts are broken for any PCIe
+ device
+
+PCI Express devices do not have physical INTx output signals, and on
+modern motherboards there is unlikely to be any interrupt controller
+with physical interrupt input signals.  There are multiple levels of
+abstraction involved in emulating the legacy INTx interrupt mechanism:
+the PCIe device sends Assert_INTx and Deassert_INTx messages, PCIe
+bridges and switches must collate these virtual wires, and the root
+complex must map the virtual wires into messages that can be
+understood by the host's emulated 8259 PIC.
+
+This complex chain of emulations is rarely tested on modern hardware,
+since operating systems will invariably use MSI-X for PCI devices and
+the I/O APIC for non-PCI devices such as the real-time clock.  Since
+the legacy interrupt emulation mechanism is rarely tested, it is
+frequently unreliable.  We have encountered many issues over the years
+in which legacy interrupts are simply not raised as expected, even
+when inspection shows that the device believes it is asserting an
+interrupt and the controller believes that the interrupt is enabled.
+
+We already maintain a list of devices that are known to fail to
+generate legacy interrupts correctly.  This list is based on the PCI
+vendor and device IDs, which is not necessarily a fair test since the
+root cause may be a board-level misconfiguration rather than a
+device-level fault.
+
+Assume that any PCI Express device has a high chance of not being able
+to raise legacy interrupts reliably.  This is a relatively intrusive
+change since it will affect essentially all modern network devices,
+but should hopefully fix all future issues with non-functional legacy
+interrupts, without needing to constantly grow the list of known
+broken devices.
+
+If some PCI Express devices are found to fail when operated in polling
+mode, then this change will need to be revisited.
+
+Signed-off-by: Michael Brown <mcb30@ipxe.org>
+---
+ src/arch/x86/drivers/net/undinet.c | 24 +++++++++++++++++++++---
+ 1 file changed, 21 insertions(+), 3 deletions(-)
+
+diff --git a/src/arch/x86/drivers/net/undinet.c b/src/arch/x86/drivers/net/undinet.c
+index 7fef9c49c..f4f78432a 100644
+--- a/src/arch/x86/drivers/net/undinet.c
++++ b/src/arch/x86/drivers/net/undinet.c
+@@ -868,10 +868,12 @@ static const struct undinet_irq_broken undinet_irq_broken_list[] = {
+ /**
+  * Check for devices with broken support for generating interrupts
+  *
+- * @v desc		Device description
++ * @v netdev		Net device
+  * @ret irq_is_broken	Interrupt support is broken; no interrupts are generated
+  */
+-static int undinet_irq_is_broken ( struct device_description *desc ) {
++static int undinet_irq_is_broken ( struct net_device *netdev ) {
++	struct undi_nic *undinic = netdev->priv;
++	struct device_description *desc = &netdev->dev->desc;
+ 	const struct undinet_irq_broken *broken;
+ 	struct pci_device pci;
+ 	uint16_t subsys_vendor;
+@@ -897,9 +899,25 @@ static int undinet_irq_is_broken ( struct device_description *desc ) {
+ 		       ( broken->pci_subsys_vendor == PCI_ANY_ID ) ) &&
+ 		     ( ( broken->pci_subsys == subsys ) ||
+ 		       ( broken->pci_subsys == PCI_ANY_ID ) ) ) {
++			DBGC ( undinic, "UNDINIC %p %04x:%04x subsys "
++			       "%04x:%04x has broken interrupts\n",
++			       undinic, desc->vendor, desc->device,
++			       subsys_vendor, subsys );
+ 			return 1;
+ 		}
+ 	}
++
++	/* Check for a PCI Express capability.  Given the number of
++	 * issues found with legacy INTx emulation on PCIe systems, we
++	 * assume that there is a high chance of interrupts not
++	 * working on any PCIe device.
++	 */
++	if ( pci_find_capability ( &pci, PCI_CAP_ID_EXP ) ) {
++		DBGC ( undinic, "UNDINIC %p is PCI Express: assuming "
++		       "interrupts are unreliable\n", undinic );
++		return 1;
++	}
++
+ 	return 0;
+ }
+ 
+@@ -1022,7 +1040,7 @@ int undinet_probe ( struct undi_device *undi, struct device *dev ) {
+ 		       undinic );
+ 		undinic->hacks |= UNDI_HACK_EB54;
+ 	}
+-	if ( undinet_irq_is_broken ( &dev->desc ) ) {
++	if ( undinet_irq_is_broken ( netdev ) ) {
+ 		DBGC ( undinic, "UNDINIC %p forcing polling mode due to "
+ 		       "broken interrupts\n", undinic );
+ 		undinic->irq_supported = 0;
+-- 
+2.49.0
+
